@@ -154,11 +154,11 @@ def cmd_list(args: argparse.Namespace) -> int:
     filter_status = getattr(args, "status", None)
     filter_severity = getattr(args, "severity", None)
 
-    for sev_label, issues in [
-        ("阻断问题 (BLOCKING)", grouped["blocking"]),
-        ("可确认问题 (CONFIRMABLE)", grouped["confirmable"]),
+    for sev_key, sev_label, issues in [
+        ("blocking", "阻断问题 (BLOCKING)", grouped["blocking"]),
+        ("confirmable", "可确认问题 (CONFIRMABLE)", grouped["confirmable"]),
     ]:
-        if filter_severity and filter_severity != sev_label.split()[0].lower():
+        if filter_severity and filter_severity != sev_key:
             continue
         if not issues:
             continue

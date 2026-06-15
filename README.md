@@ -15,8 +15,9 @@ python backup_audit_cli.py import sample_backup/manifest.json sample_backup
 # 3. 运行预检（只读，不修改源文件）
 python backup_audit_cli.py precheck sample_backup
 
-# 4. 查看问题清单
-python backup_audit_cli.py list sample_backup
+# 4. 按严重程度筛选问题，方便逐条处理
+python backup_audit_cli.py list sample_backup --severity blocking
+python backup_audit_cli.py list sample_backup --severity confirmable
 
 # 5. 复核：标记问题状态
 python backup_audit_cli.py review sample_backup <问题ID> --status pending_fix --assignee zhangsan --notes "联系运维补传"
@@ -24,10 +25,20 @@ python backup_audit_cli.py review sample_backup <问题ID> --status pending_fix 
 # 6. 撤销上一条复核
 python backup_audit_cli.py undo sample_backup
 
-# 7. 导出报告（JSON + CSV）
+# 7. 签收批次（阻断问题必须全部处理，否则需要 --force-with-reason）
+python backup_audit_cli.py finalize sample_backup --signer wangwu --reason "所有阻断问题已修复，可确认问题已人工审核"
+
+# 8. 如确需带阻断问题放行，使用强制签收（必须写清理由）
+python backup_audit_cli.py finalize sample_backup --signer manager --reason "经风险评估委员会审批，特批该批次带问题放行" --force-with-reason
+
+# 9. 签收后只读，禁止 precheck/review/undo/重复 finalize
+# 如需重新编辑，重开已签收批次
+python backup_audit_cli.py reopen sample_backup --reopener zhangsan --reason "发现漏处理的阻断问题，需补充复核"
+
+# 10. 导出报告（JSON + CSV，包含签收摘要和操作日志）
 python backup_audit_cli.py export sample_backup --output sample_backup/reports
 
-# 8. 新进程恢复已有批次
+# 11. 新进程恢复已有批次
 python backup_audit_cli.py resume sample_backup
 ```
 
@@ -200,11 +211,15 @@ python -m pytest tests/test_regression.py -v
 backup_audit/
   __init__.py          # 包定义
   models.py            # 数据模型：Issue, Manifest, AuditBatch, review_history
+                        # 新增：BatchStatus, Signoff, ReopenRecord, OperationLogEntry
+                        # 新增方法：finalize(), reopen(), is_readonly(), count_unresolved_*()
   validator.py         # 校验逻辑 + ManifestValidationError
-  reporter.py          # 报告导出（JSON/CSV）+ 概要打印
+  reporter.py          # 报告导出（JSON/CSV）+ 概要打印（含签收状态）
   cli.py               # CLI 命令入口：import/precheck/list/review/undo/export/resume
+                        # 新增：finalize（签收）、reopen（重开）
+                        # 新增：只读拦截逻辑，防止已签收批次被修改
 backup_audit_cli.py    # 可执行入口
 tests/
-  test_regression.py   # 回归测试
+  test_regression.py   # 回归测试（10个测试类，35个测试用例）
 generate_samples.py    # 生成样例备份数据（含各种异常场景）
 ```

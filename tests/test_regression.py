@@ -600,5 +600,67 @@ class TestCrossProcessSignoff(unittest.TestCase):
         self.assertEqual(report["reopen_records"][0]["previous_signoff"]["signer"], "signer1")
 
 
+class TestListSeverityFilter(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_list_filter_")
+        content = b"test for filter"
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        make_temp_backup(self.tmp_dir, [
+            {"name": "good.dat", "content": content},
+            {"name": "bad.dat", "content": b"tampered", "sha256": wrong_hash},
+            {"name": "old.dat", "content": b"old", "age_minutes": 60 * 24 * 30},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_list_severity_blocking_shows_details(self):
+        r = run_cli("list", self.tmp_dir, "--severity", "blocking")
+        self.assertEqual(r.returncode, 0, f"list should succeed: {r.stderr}")
+        self.assertIn("阻断问题 (BLOCKING)", r.stdout)
+        self.assertIn("bad_checksum", r.stdout)
+        self.assertIn("bad.dat", r.stdout)
+        self.assertNotIn("outside_backup_window", r.stdout)
+        self.assertNotIn("可确认问题 (CONFIRMABLE)", r.stdout)
+
+    def test_list_severity_confirmable_shows_details(self):
+        r = run_cli("list", self.tmp_dir, "--severity", "confirmable")
+        self.assertEqual(r.returncode, 0, f"list should succeed: {r.stderr}")
+        self.assertIn("可确认问题 (CONFIRMABLE)", r.stdout)
+        self.assertIn("outside_backup_window", r.stdout)
+        self.assertIn("old.dat", r.stdout)
+        self.assertNotIn("bad_checksum", r.stdout)
+        self.assertNotIn("阻断问题 (BLOCKING)", r.stdout)
+
+    def test_list_no_severity_shows_all(self):
+        r = run_cli("list", self.tmp_dir)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("阻断问题 (BLOCKING)", r.stdout)
+        self.assertIn("可确认问题 (CONFIRMABLE)", r.stdout)
+        self.assertIn("bad_checksum", r.stdout)
+        self.assertIn("outside_backup_window", r.stdout)
+
+    def test_list_severity_blocking_with_status_filter(self):
+        r = run_cli("list", self.tmp_dir, "--severity", "blocking", "--status", "open")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("阻断问题 (BLOCKING)", r.stdout)
+        self.assertIn("bad.dat", r.stdout)
+
+    def test_list_severity_confirmable_with_status_filter(self):
+        r = run_cli("list", self.tmp_dir, "--severity", "confirmable", "--status", "open")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("可确认问题 (CONFIRMABLE)", r.stdout)
+        self.assertIn("old.dat", r.stdout)
+
+    def test_list_severity_help_shows_correct_options(self):
+        r = run_cli("list", "--help")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--severity", r.stdout)
+        self.assertIn("blocking", r.stdout)
+        self.assertIn("confirmable", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

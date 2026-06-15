@@ -66,11 +66,11 @@
       "severity": "blocking",
       "file_path": "data/tampered_file.dat",
       "message": "SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936",
-      "status": "open",
-      "assignee": null,
+      "status": "confirmed",
+      "assignee": "tester",
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.855740",
-      "updated_at": "2026-06-16T03:05:15.855747",
+      "created_at": "2026-06-16T03:20:31.353721",
+      "updated_at": "2026-06-16T03:27:52.994331",
       "detail": {
         "type": "bad_checksum"
       }
@@ -84,8 +84,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.855798",
-      "updated_at": "2026-06-16T03:05:15.855800",
+      "created_at": "2026-06-16T03:20:31.353847",
+      "updated_at": "2026-06-16T03:20:31.353851",
       "detail": {
         "type": "size_mismatch"
       }
@@ -99,8 +99,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.855968",
-      "updated_at": "2026-06-16T03:05:15.855970",
+      "created_at": "2026-06-16T03:20:31.354551",
+      "updated_at": "2026-06-16T03:20:31.354557",
       "detail": {
         "type": "missing_file"
       }
@@ -114,8 +114,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.856130",
-      "updated_at": "2026-06-16T03:05:15.856131",
+      "created_at": "2026-06-16T03:20:31.355354",
+      "updated_at": "2026-06-16T03:20:31.355357",
       "detail": {
         "type": "outside_window"
       }
@@ -129,8 +129,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.856287",
-      "updated_at": "2026-06-16T03:05:15.856289",
+      "created_at": "2026-06-16T03:20:31.356183",
+      "updated_at": "2026-06-16T03:20:31.356188",
       "detail": {
         "type": "unknown_business_line"
       }
@@ -144,8 +144,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:05:15.856295",
-      "updated_at": "2026-06-16T03:05:15.856297",
+      "created_at": "2026-06-16T03:20:31.356200",
+      "updated_at": "2026-06-16T03:20:31.356202",
       "detail": {
         "field": "revocation_list"
       }
@@ -160,18 +160,27 @@
     "data/old_file.dat",
     "data/unknown_bl.dat"
   ],
-  "review_history": [],
+  "review_history": [
+    {
+      "issue_id": "02d8013c22e5",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "updated_at": "2026-06-16T03:20:31.353732",
+      "timestamp": "2026-06-16T03:27:52.994242"
+    }
+  ],
   "status": "open",
   "signoff": null,
   "reopen_records": [
     {
       "reopener": "ops",
-      "reason": "发现漏处理的问题",
-      "timestamp": "2026-06-16T03:06:07.321799",
+      "reason": "发现漏处理，需补充复核",
+      "timestamp": "2026-06-16T03:27:23.077061",
       "previous_signoff": {
         "signer": "manager",
-        "reason": "经风险评估，特批放行",
-        "timestamp": "2026-06-16T03:05:43.748520",
+        "reason": "测试强制放行",
+        "timestamp": "2026-06-16T03:26:58.449045",
         "forced": true,
         "unresolved_blocking_count": 3,
         "unresolved_confirmable_count": 3
@@ -183,7 +192,7 @@
       "action": "precheck",
       "actor": null,
       "reason": null,
-      "timestamp": "2026-06-16T03:05:15.856317",
+      "timestamp": "2026-06-16T03:20:31.356241",
       "detail": {
         "new_issues": 6
       }
@@ -191,8 +200,8 @@
     {
       "action": "finalize",
       "actor": "manager",
-      "reason": "经风险评估，特批放行",
-      "timestamp": "2026-06-16T03:05:43.748552",
+      "reason": "测试强制放行",
+      "timestamp": "2026-06-16T03:26:58.449090",
       "detail": {
         "forced": true,
         "unresolved_blocking": 3,
@@ -202,23 +211,34 @@
     {
       "action": "reopen",
       "actor": "ops",
-      "reason": "发现漏处理的问题",
-      "timestamp": "2026-06-16T03:06:07.321843",
+      "reason": "发现漏处理，需补充复核",
+      "timestamp": "2026-06-16T03:27:23.077113",
       "detail": {
         "reopen_count": 1
+      }
+    },
+    {
+      "action": "review",
+      "actor": "tester",
+      "reason": null,
+      "timestamp": "2026-06-16T03:27:52.994346",
+      "detail": {
+        "issue_id": "02d8013c22e5",
+        "old_status": "open",
+        "new_status": "confirmed"
       }
     },
     {
       "action": "export",
       "actor": null,
       "reason": null,
-      "timestamp": "2026-06-16T03:06:20.026514",
+      "timestamp": "2026-06-16T03:27:53.617731",
       "detail": {
         "format": "all",
         "output_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup\\reports"
       }
     }
   ],
-  "created_at": "2026-06-16T03:05:04.606749",
-  "updated_at": "2026-06-16T03:06:20.041271"
+  "created_at": "2026-06-16T03:20:31.121705",
+  "updated_at": "2026-06-16T03:27:53.622221"
 }
