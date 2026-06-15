@@ -814,5 +814,174 @@ class TestWaiverRescanCommand(WaiverTestBase):
         self.assertGreaterEqual(len(ops), 2)
 
 
+class TestSignedOffWaiverLockin(WaiverTestBase):
+    def _setup_signed_batch_with_blocking(self):
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        files = [
+            {"name": "good.dat", "content": b"hello"},
+            {"name": "bad.dat", "content": b"tampered", "sha256": wrong_hash},
+        ]
+        self._setup_batch(files=files)
+        r = run_cli(
+            "finalize", self.tmp_dir,
+            "--signer", "approver",
+            "--reason", "先签收，豁免后补",
+            "--force-with-reason",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"finalize should succeed: {r.stderr}")
+
+    def test_finalize_then_add_waiver_resume_does_not_change_blocking_count(self):
+        self._setup_signed_batch_with_blocking()
+
+        state_before = self._read_state()
+        signoff_blocking_before = state_before["signoff"]["unresolved_blocking_count"]
+        self.assertGreater(signoff_blocking_before, 0, "签收时应有未处理阻断")
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "ops_after",
+            "--reason", "签收后补的豁免",
+            "--issue-type", "bad_checksum",
+            "--severity", "blocking",
+            "--path-prefix", "data/",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli("resume", self.tmp_dir, extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("豁免规则已锁定在签收时刻", r.stdout)
+
+        state_after = self._read_state()
+        signoff_blocking_after = state_after["signoff"]["unresolved_blocking_count"]
+        self.assertEqual(
+            signoff_blocking_after, signoff_blocking_before,
+            "签收记录中的未处理阻断数不应因后续豁免规则而改变"
+        )
+
+        waived_after = sum(1 for i in state_after["issues"] if i.get("waived"))
+        self.assertEqual(waived_after, 0, "已签收批次的问题不应被后续豁免规则修改")
+
+    def test_list_after_new_waiver_on_signed_batch_shows_same_status(self):
+        self._setup_signed_batch_with_blocking()
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "ops_after",
+            "--reason", "签收后补的豁免",
+            "--issue-type", "bad_checksum",
+            "--severity", "blocking",
+            "--path-prefix", "data/",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli("list", self.tmp_dir, "--waived", "include", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("[已豁免]", r.stdout, "已签收批次 list 不应显示被后续规则豁免的问题")
+        self.assertIn("[活跃]", r.stdout)
+
+    def test_export_after_new_waiver_on_signed_batch_keeps_signoff_consistent(self):
+        self._setup_signed_batch_with_blocking()
+        out_dir = os.path.join(self.tmp_dir, "reports")
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "ops_after",
+            "--reason", "签收后补的豁免",
+            "--issue-type", "bad_checksum",
+            "--severity", "blocking",
+            "--path-prefix", "data/",
+            extra_env=self.extra_env,
+        )
+
+        run_cli("export", self.tmp_dir, "--output", out_dir, "--format", "json", extra_env=self.extra_env)
+        json_path = os.path.join(out_dir, "audit_report_TEST-001.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        summary_blocking = report["summary"]["unresolved_blocking"]
+        signoff_blocking = report["signoff"]["unresolved_blocking_count"]
+        self.assertEqual(
+            summary_blocking, signoff_blocking,
+            "导出报告的未处理阻断统计应与签收记录一致"
+        )
+
+        waived_total = report["summary"]["waived_total"]
+        self.assertEqual(waived_total, 0, "已签收批次导出不应显示被后续规则豁免的问题")
+
+    def test_reopen_then_rescan_applies_new_waivers(self):
+        self._setup_signed_batch_with_blocking()
+
+        state_before = self._read_state()
+        waived_before = sum(1 for i in state_before["issues"] if i.get("waived"))
+        self.assertEqual(waived_before, 0)
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "ops_after",
+            "--reason", "重开后生效的豁免",
+            "--issue-type", "bad_checksum",
+            "--severity", "blocking",
+            "--path-prefix", "data/",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "reopen", self.tmp_dir,
+            "--reopener", "reopener_zhang",
+            "--reason", "发现之前的阻断可以豁免",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"reopen should succeed: {r.stderr}")
+
+        state_after_reopen = self._read_state()
+        waived_after_reopen = sum(1 for i in state_after_reopen["issues"] if i.get("waived"))
+        self.assertEqual(waived_after_reopen, 0, "重开后不自动应用豁免，等用户触发")
+
+        run_cli(
+            "waiver", "rescan", self.tmp_dir,
+            "--actor", "reopener_zhang",
+            extra_env=self.extra_env,
+        )
+
+        state_after_rescan = self._read_state()
+        waived_after_rescan = sum(1 for i in state_after_rescan["issues"] if i.get("waived"))
+        self.assertGreater(waived_after_rescan, 0, "重开后 rescan 应使新豁免规则生效")
+
+    def test_cross_restart_signed_batch_waived_count_stable(self):
+        self._setup_signed_batch_with_blocking()
+
+        state_before = self._read_state()
+        waived_before = sum(1 for i in state_before["issues"] if i.get("waived"))
+        blocking_before = sum(
+            1 for i in state_before["issues"]
+            if i["severity"] == "blocking" and not i.get("waived")
+        )
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "ops_after",
+            "--reason", "重启后也不该生效",
+            "--issue-type", "bad_checksum",
+            "--severity", "blocking",
+            "--path-prefix", "data/",
+            extra_env=self.extra_env,
+        )
+
+        for _ in range(3):
+            r = run_cli("resume", self.tmp_dir, extra_env=self.extra_env)
+            self.assertEqual(r.returncode, 0)
+
+        state_after = self._read_state()
+        waived_after = sum(1 for i in state_after["issues"] if i.get("waived"))
+        blocking_after = sum(
+            1 for i in state_after["issues"]
+            if i["severity"] == "blocking" and not i.get("waived")
+        )
+
+        self.assertEqual(waived_after, waived_before, "跨重启后已签收批次的豁免数应保持不变")
+        self.assertEqual(blocking_after, blocking_before, "跨重启后已签收批次的活跃阻断数应保持不变")
+
+
 if __name__ == "__main__":
     unittest.main()

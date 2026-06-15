@@ -79,6 +79,8 @@ def apply_waivers_to_batch(
     actor: str,
     always_log: bool = False,
 ) -> Tuple[int, int]:
+    if batch.is_readonly():
+        return 0, 0
     newly_waived = 0
     newly_unwaived = 0
     for issue in batch.issues:
@@ -385,6 +387,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
     print(f"已恢复批次: {batch.id}")
     print(f"  存储文件: {batch.storage_path}")
+    if batch.is_readonly():
+        print(f"  状态: 已签收（豁免规则已锁定在签收时刻，不受当前规则影响）")
     if newly_waived > 0:
         print(f"  本次豁免命中: {newly_waived} 个问题")
     if newly_unwaived > 0:
