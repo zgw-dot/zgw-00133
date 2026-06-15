@@ -1,0 +1,31 @@
+{
+  "batch_id": "TEST-001",
+  "backup_window": {
+    "start": "2026-06-15T04:04:00.670659",
+    "end": "2026-06-16T04:04:00.670659"
+  },
+  "valid_business_lines": [
+    "order_system"
+  ],
+  "files": [
+    {
+      "path": "data/report_2024_001.parquet",
+      "sha256": "ed018154bdd8671a02aa70677f3ce1c34e9fe5a181fa9d609e8304c99f1814b5",
+      "size": 22,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/report_2024_002.parquet",
+      "sha256": "06fe97f62ba1ddf0add256b3db64ef399e84ff3d65c67a00dda424949ed074c0",
+      "size": 29,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/report_2024_003.parquet",
+      "sha256": "a33955fe61a87b4e4f5e8790ebc23b0de23caf6d48c0672e738aa870ff0754ef",
+      "size": 16,
+      "business_line": "order_system"
+    }
+  ],
+  "revocation_list": []
+}

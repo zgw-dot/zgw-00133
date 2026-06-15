@@ -1,0 +1,1242 @@
+===== CLEAN 鎵规瀹屾暣娴佺▼杈撳嚭 =====
+
+========================================================================
+$ python backup_audit_cli.py import D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+鎵规宸插鍏? TEST-001
+
+  Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+  澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+  Manifest 涓殑鏂囦欢鏁? 3
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py precheck D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+杩愯棰勬: 鎵规 TEST-001
+
+  (棰勬涓嶄細淇敼婧愬浠芥枃浠?
+
+
+
+棰勬瀹屾垚:
+
+  鏂板闂: 1
+
+  绱闂: 1
+
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --severity blocking
+========================================================================
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --severity confirmable
+========================================================================
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+
+--- 鍙‘璁ら棶棰?(CONFIRMABLE) ---
+
+  [1fb222aa8087] empty_revocation     open            <manifest>
+
+      Revocation list is present but empty - please confirm this is intentional
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --signer wangwu --reason 鎵€鏈夋牎楠岄€氳繃锛屾湭澶勭悊闂鏁颁负 0锛屽彲褰掓。
+========================================================================
+鎵规宸茬鏀? TEST-001
+
+  鐘舵€? 姝ｅ父绛炬敹
+
+  绛炬敹浜? wangwu
+
+  绛炬敹鐞嗙敱: 鎵€鏈夋牎楠岄€氳繃锛屾湭澶勭悊闂鏁颁负 0锛屽彲褰掓。
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+  鏈鐞嗗彲纭闂: 1 涓?
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 姝ｅ父绛炬敹
+
+绛炬敹浜? wangwu
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+鏈鐞嗗彲纭闂: 1 涓?
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    2 鏉?
+
+[exit code: 0]
+
+
+===== CLEAN 鎵规锛氱鏀跺悗鎵ц鍙鎷︽埅 =====
+
+
+========================================================================
+$ python backup_audit_cli.py precheck D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+--- STDERR ---
+閿欒: 鎵规宸茬鏀讹紝绂佹鎵ц precheck 鎿嶄綔銆?
+  绛炬敹浜? wangwu
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+濡傞渶缁х画缂栬緫锛岃浣跨敤 reopen 鍛戒护銆?
+
+[exit code: 3]
+
+========================================================================
+$ python backup_audit_cli.py undo D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+--- STDERR ---
+閿欒: 鎵规宸茬鏀讹紝绂佹鎵ц undo 鎿嶄綔銆?
+  绛炬敹浜? wangwu
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+濡傞渶缁х画缂栬緫锛岃浣跨敤 reopen 鍛戒护銆?
+
+[exit code: 3]
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --signer other --reason 閲嶅绛炬敹娴嬭瘯
+========================================================================
+--- STDERR ---
+閿欒: 鎵规宸茬鏀讹紝涓嶈兘閲嶅绛炬敹銆?
+  绛炬敹浜? wangwu
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+濡傞渶閲嶆柊绛炬敹锛岃鍏堜娇鐢?reopen 鍛戒护銆?
+
+[exit code: 4]
+
+
+===== CLEAN 鎵规锛歳esume 鏄剧ず finalized 鐘舵€?=====
+
+
+========================================================================
+$ python backup_audit_cli.py resume D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+宸叉仮澶嶆壒娆? TEST-001
+
+  瀛樺偍鏂囦欢: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\.audit_state\batch_TEST-001.json
+
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 姝ｅ父绛炬敹
+
+绛炬敹浜? wangwu
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:29.244668
+
+鏈鐞嗗彲纭闂: 1 涓?
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    2 鏉?
+
+[exit code: 0]
+
+
+===== CLEAN 鎵规锛歳eopen 鎭㈠缂栬緫 =====
+
+
+========================================================================
+$ python backup_audit_cli.py reopen D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --reopener ops_lead --reason 琛ュ厖澶嶆牳涓€鏉″彲纭闂
+========================================================================
+鎵规宸查噸寮€锛屾仮澶嶇紪杈? TEST-001
+
+  閲嶅紑浜? ops_lead
+
+  閲嶅紑鐞嗙敱: 琛ュ厖澶嶆牳涓€鏉″彲纭闂
+
+  绱閲嶅紑娆℃暟: 1
+
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    3 鏉?
+
+[exit code: 0]
+
+
+===== CLEAN 鎵规锛歳eopen 鍚庢仮澶嶅彲 review =====
+
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean --severity confirmable
+========================================================================
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    3 鏉?
+
+
+--- 鍙‘璁ら棶棰?(CONFIRMABLE) ---
+
+  [1fb222aa8087] empty_revocation     open            <manifest>
+
+      Revocation list is present but empty - please confirm this is intentional
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py resume D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+========================================================================
+宸叉仮澶嶆壒娆? TEST-001
+
+  瀛樺偍鏂囦欢: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\.audit_state\batch_TEST-001.json
+
+
+
+鎵规 ID: TEST-001
+
+鎵规鐘舵€? open
+
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup_clean\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    1
+
+  闃绘柇闂:    0 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  1 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:1
+
+
+
+  鎸夌姸鎬?
+
+    open: 1
+
+  宸叉壂鎻忔枃浠?  3/3
+
+  鎿嶄綔鏃ュ織:    3 鏉?
+
+[exit code: 0]
+
+
+==============================================================
+===== MIXED 鎵规瀹屾暣娴佺▼杈撳嚭锛堝凡鏈?sample_backup锛?  =====
+==============================================================
+
+
+========================================================================
+$ python backup_audit_cli.py import D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+鎵规宸插鍏? BATCH-2024-001
+
+  Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+  澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+  Manifest 涓殑鏂囦欢鏁? 7
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py precheck D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+杩愯棰勬: 鎵规 BATCH-2024-001
+
+  (棰勬涓嶄細淇敼婧愬浠芥枃浠?
+
+
+
+棰勬瀹屾垚:
+
+  鏂板闂: 6
+
+  绱闂: 6
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  3
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    open: 6
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --severity blocking
+========================================================================
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  3
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    open: 6
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+
+--- 闃绘柇闂 (BLOCKING) ---
+
+  [02d8013c22e5] bad_checksum         open            data/tampered_file.dat
+
+      SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936
+
+  [ced10514917e] size_mismatch        open            data/wrong_size.dat
+
+      Size mismatch: expected 539, got 39
+
+  [79ddd6fc0c30] missing_file         open            data/deleted_file.dat
+
+      File not found: data/deleted_file.dat
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --severity confirmable
+========================================================================
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? open
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  3
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    open: 6
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    1 鏉?
+
+
+--- 鍙‘璁ら棶棰?(CONFIRMABLE) ---
+
+  [28d3b40711d7] outside_backup_window open            data/old_file.dat
+
+      File mtime 2026-06-09T03:04:45.674929 outside backup window [2026-06-16T01:04:45.674929, 2026-06-16T03:04:45.674929]
+
+  [bdfd4b1829ec] unknown_business_line open            data/unknown_bl.dat
+
+      Unknown business line 'unknown_system_xyz', valid: ['order_system', 'payment_system', 'user_system']
+
+  [1fb222aa8087] empty_revocation     open            <manifest>
+
+      Revocation list is present but empty - please confirm this is intentional
+
+[exit code: 0]
+
+--- mixed 鎵规锛氭棤 force 绛炬敹锛堥鏈熷け璐ワ級---
+
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --signer wangwu --reason 璇皾璇曟棤 force 绛炬敹
+========================================================================
+--- STDERR ---
+閿欒: 瀛樺湪 3 涓湭澶勭悊鐨勯樆鏂棶棰橈紝涓嶈兘绛炬敹銆?
+璇峰厛澶勭悊鎵€鏈夐樆鏂棶棰橈紝鎴栦娇鐢?--force-with-reason 寮哄埗鏀捐锛堥渶鍚屾椂鎻愪緵 --reason锛夈€?
+
+[exit code: 5]
+
+========================================================================
+$ python backup_audit_cli.py review D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup 02d8013c22e5 --status confirmed --assignee zhangsan --notes 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+========================================================================
+闂宸叉洿鏂? 02d8013c22e5
+
+  鐘舵€? confirmed
+
+  澶勭悊浜? zhangsan
+
+  澶囨敞: 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py review D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup ced10514917e --status confirmed --assignee zhangsan --notes 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+========================================================================
+闂宸叉洿鏂? ced10514917e
+
+  鐘舵€? confirmed
+
+  澶勭悊浜? zhangsan
+
+  澶囨敞: 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+
+[exit code: 0]
+
+--- mixed 鎵规锛氬鐞?2/3 blocking 鍚庯紝鍐嶆灏濊瘯绛炬敹锛堥鏈熶粛澶辫触锛?--
+
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --signer wangwu --reason 杩樺墿 1 鏉?blocking
+========================================================================
+--- STDERR ---
+閿欒: 瀛樺湪 1 涓湭澶勭悊鐨勯樆鏂棶棰橈紝涓嶈兘绛炬敹銆?
+璇峰厛澶勭悊鎵€鏈夐樆鏂棶棰橈紝鎴栦娇鐢?--force-with-reason 寮哄埗鏀捐锛堥渶鍚屾椂鎻愪緵 --reason锛夈€?
+
+[exit code: 5]
+
+--- mixed 鎵规锛氬己鍒舵斁琛岋紙--force-with-reason + 鐞嗙敱锛?--
+
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --signer dept_manager --reason 缁?2024-Q2 澶囦唤椋庨櫓璇勫浼氬鎵癸紝鍓╀綑 1 鏉?SHA 涓嶅尮閰嶅彲杩芥函鍒版簮绔凡鐭ユ晠闅滐紝鐗规壒鏀捐 --force-with-reason
+========================================================================
+鎵规宸茬鏀? BATCH-2024-001
+
+  鐘舵€? 寮哄埗鏀捐
+
+  绛炬敹浜? dept_manager
+
+  绛炬敹鐞嗙敱: 缁?2024-Q2 澶囦唤椋庨櫓璇勫浼氬鎵癸紝鍓╀綑 1 鏉?SHA 涓嶅尮閰嶅彲杩芥函鍒版簮绔凡鐭ユ晠闅滐紝鐗规壒鏀捐
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+  [!] 鏈鐞嗛樆鏂棶棰? 1 涓?
+  鏈鐞嗗彲纭闂: 3 涓?
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 寮哄埗鏀捐
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+[!] 鏈鐞嗛樆鏂棶棰? 1 涓?
+鏈鐞嗗彲纭闂: 3 涓?
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  1
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 2
+
+    open: 4
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    4 鏉?
+
+[exit code: 0]
+
+--- mixed 鎵规锛歳esume 鐪嬪埌 finalized + 寮哄埗鏀捐淇℃伅 ---
+
+
+========================================================================
+$ python backup_audit_cli.py resume D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+宸叉仮澶嶆壒娆? BATCH-2024-001
+
+  瀛樺偍鏂囦欢: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\.audit_state\batch_BATCH-2024-001.json
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 寮哄埗鏀捐
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+[!] 鏈鐞嗛樆鏂棶棰? 1 涓?
+鏈鐞嗗彲纭闂: 3 涓?
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  1
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 2
+
+    open: 4
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    4 鏉?
+
+[exit code: 0]
+
+--- mixed 鎵规锛歭ist 鐪嬪埌 finalized 鐘舵€?---
+
+
+========================================================================
+$ python backup_audit_cli.py list D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 寮哄埗鏀捐
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+[!] 鏈鐞嗛樆鏂棶棰? 1 涓?
+鏈鐞嗗彲纭闂: 3 涓?
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  1
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 2
+
+    open: 4
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    4 鏉?
+
+
+--- 闃绘柇闂 (BLOCKING) ---
+
+  [02d8013c22e5] bad_checksum         confirmed       data/tampered_file.dat
+
+      澶勭悊浜? zhangsan
+
+      澶囨敞: 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+
+      SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936
+
+  [ced10514917e] size_mismatch        confirmed       data/wrong_size.dat
+
+      澶勭悊浜? zhangsan
+
+      澶囨敞: 宸蹭汉宸ユ牳瀹炲彲鎺ュ彈
+
+      Size mismatch: expected 539, got 39
+
+  [79ddd6fc0c30] missing_file         open            data/deleted_file.dat
+
+      File not found: data/deleted_file.dat
+
+
+
+--- 鍙‘璁ら棶棰?(CONFIRMABLE) ---
+
+  [28d3b40711d7] outside_backup_window open            data/old_file.dat
+
+      File mtime 2026-06-09T03:04:45.674929 outside backup window [2026-06-16T01:04:45.674929, 2026-06-16T03:04:45.674929]
+
+  [bdfd4b1829ec] unknown_business_line open            data/unknown_bl.dat
+
+      Unknown business line 'unknown_system_xyz', valid: ['order_system', 'payment_system', 'user_system']
+
+  [1fb222aa8087] empty_revocation     open            <manifest>
+
+      Revocation list is present but empty - please confirm this is intentional
+
+[exit code: 0]
+
+--- mixed 鎵规锛氬彧璇绘嫤鎴?review 鍜?precheck ---
+
+
+========================================================================
+$ python backup_audit_cli.py precheck D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+--- STDERR ---
+閿欒: 鎵规宸茬鏀讹紝绂佹鎵ц precheck 鎿嶄綔銆?
+  绛炬敹浜? dept_manager
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+濡傞渶缁х画缂栬緫锛岃浣跨敤 reopen 鍛戒护銆?
+
+[exit code: 3]
+
+========================================================================
+$ python backup_audit_cli.py review D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup 79ddd6fc0c30 --status confirmed
+========================================================================
+--- STDERR ---
+閿欒: 鎵规宸茬鏀讹紝绂佹鎵ц review 鎿嶄綔銆?
+  绛炬敹浜? dept_manager
+
+  绛炬敹鏃堕棿: 2026-06-16T03:45:32.567540
+
+濡傞渶缁х画缂栬緫锛岃浣跨敤 reopen 鍛戒护銆?
+
+[exit code: 3]
+
+--- mixed 鎵规锛歳eopen 鎭㈠缂栬緫锛岀疮璁￠噸寮€娆℃暟 1 ---
+
+
+========================================================================
+$ python backup_audit_cli.py reopen D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --reopener zhangsan --reason 涓婅疆绛炬敹婕忓鐞?1 鏉?blocking锛岄渶琛ュ鏍?
+========================================================================
+鎵规宸查噸寮€锛屾仮澶嶇紪杈? BATCH-2024-001
+
+  閲嶅紑浜? zhangsan
+
+  閲嶅紑鐞嗙敱: 涓婅疆绛炬敹婕忓鐞?1 鏉?blocking锛岄渶琛ュ鏍?
+  绱閲嶅紑娆℃暟: 1
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? open
+
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  1
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 2
+
+    open: 4
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    5 鏉?
+
+[exit code: 0]
+
+--- mixed 鎵规锛歳eopen 鍚庡啀娆?resume 鐪嬪埌閲嶅紑娆℃暟 ---
+
+
+========================================================================
+$ python backup_audit_cli.py resume D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+宸叉仮澶嶆壒娆? BATCH-2024-001
+
+  瀛樺偍鏂囦欢: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\.audit_state\batch_BATCH-2024-001.json
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? open
+
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  1
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 2
+
+    open: 4
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    5 鏉?
+
+[exit code: 0]
+
+--- mixed 鎵规锛歳eopen 鍚庡啀娆?finalize锛堢幇鍦?0 鏉?blocking 鏈鐞?= 姝ｅ父绛炬敹锛?--
+
+
+========================================================================
+$ python backup_audit_cli.py review D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup 79ddd6fc0c30 --status confirmed --assignee zhangsan --notes 閲嶅紑鍚庤ˉ鍏呭畬鎴愬鏍?
+========================================================================
+闂宸叉洿鏂? 79ddd6fc0c30
+
+  鐘舵€? confirmed
+
+  澶勭悊浜? zhangsan
+
+  澶囨敞: 閲嶅紑鍚庤ˉ鍏呭畬鎴愬鏍?
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py finalize D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --signer dept_manager --reason 鎵€鏈?blocking 宸插鏍稿畬鎴愶紝鎵规鍙綊妗?
+========================================================================
+鎵规宸茬鏀? BATCH-2024-001
+
+  鐘舵€? 姝ｅ父绛炬敹
+
+  绛炬敹浜? dept_manager
+
+  绛炬敹鐞嗙敱: 鎵€鏈?blocking 宸插鏍稿畬鎴愶紝鎵规鍙綊妗?
+  绛炬敹鏃堕棿: 2026-06-16T03:45:34.117174
+
+  鏈鐞嗗彲纭闂: 3 涓?
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 姝ｅ父绛炬敹
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:34.117174
+
+鏈鐞嗗彲纭闂: 3 涓?
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 3
+
+    open: 3
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    7 鏉?
+
+[exit code: 0]
+
+========================================================================
+$ python backup_audit_cli.py resume D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+========================================================================
+宸叉仮澶嶆壒娆? BATCH-2024-001
+
+  瀛樺偍鏂囦欢: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\.audit_state\batch_BATCH-2024-001.json
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 姝ｅ父绛炬敹
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:34.117174
+
+鏈鐞嗗彲纭闂: 3 涓?
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 3
+
+    open: 3
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    7 鏉?
+
+[exit code: 0]
+
+--- mixed 鎵规锛歟xport 瀵煎嚭鍖呭惈 signoff 鎽樿鍜屾搷浣滄棩蹇?---
+
+
+========================================================================
+$ python backup_audit_cli.py export D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup --output D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\reports_doc
+========================================================================
+JSON 鎶ュ憡: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\reports_doc\audit_report_BATCH-2024-001.json
+
+CSV 鎶ュ憡: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\reports_doc\audit_report_BATCH-2024-001.csv
+
+
+
+鎵规 ID: BATCH-2024-001
+
+鎵规鐘舵€? finalized
+
+绛炬敹鐘舵€? 姝ｅ父绛炬敹
+
+绛炬敹浜? dept_manager
+
+绛炬敹鏃堕棿: 2026-06-16T03:45:34.117174
+
+鏈鐞嗗彲纭闂: 3 涓?
+閲嶅紑娆℃暟: 1
+
+澶囦唤鐩綍: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+
+Manifest: D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+
+
+
+=== 姒傝 ===
+
+  闂鎬绘暟:    6
+
+  闃绘柇闂:    3 (蹇呴』淇)
+
+  鍙‘璁ら棶棰?  3 (浜哄伐纭)
+
+  鏈鐞嗛樆鏂?  0
+
+  鏈鐞嗗彲纭:3
+
+
+
+  鎸夌姸鎬?
+
+    confirmed: 3
+
+    open: 3
+
+  宸叉壂鎻忔枃浠?  7/7
+
+  鎿嶄綔鏃ュ織:    8 鏉?
+
+[exit code: 0]
+
+--- JSON 鎶ュ憡寮€澶达紙signoff/reopen_records/operation_log 鍏抽敭瀛楁锛?--
+
+batch_id: "BATCH-2024-001"
+status: "finalized"
+signoff: {
+  "signer": "dept_manager",
+  "reason": "鎵€鏈?blocking 宸插鏍稿畬鎴愶紝鎵规鍙綊妗?,
+  "timestamp": "2026-06-16T03:45:34.117174",
+  "forced": false,
+  "unresolved_blocking_count": 0,
+  "unresolved_confirmable_count": 3
+}
+reopen_records: [
+  {
+    "reopener": "zhangsan",
+    "reason": "涓婅疆绛炬敹婕忓鐞?1 鏉?blocking锛岄渶琛ュ鏍?,
+    "timestamp": "2026-06-16T03:45:33.610648",
+    "previous_signoff": {
+      "signer": "dept_manager",
+      "reason": "缁?2024-Q2 澶囦唤椋庨櫓璇勫浼氬鎵癸紝鍓╀綑 1 鏉?SHA 涓嶅尮閰嶅彲杩芥函鍒版簮绔凡鐭ユ晠闅滐紝鐗规壒鏀捐",
+      "timestamp": "2026-06-16T03:45:32.567540",
+      "forced": true,
+      "unresolved_blocking_count": 1,
+      "unresolved_confirmable_count": 3
+    }
+  }
+]
+operation_log 鏉＄洰鏁? 8
+  鍓?3 鏉?action: precheck, review, review

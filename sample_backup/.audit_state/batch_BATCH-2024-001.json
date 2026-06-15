@@ -5,8 +5,8 @@
   "manifest": {
     "batch_id": "BATCH-2024-001",
     "backup_window": {
-      "start": "2026-06-16T01:04:45.674929",
-      "end": "2026-06-16T03:04:45.674929"
+      "start": "2026-06-16T01:49:31.611317",
+      "end": "2026-06-16T03:49:31.611317"
     },
     "valid_business_lines": [
       "order_system",
@@ -67,10 +67,10 @@
       "file_path": "data/tampered_file.dat",
       "message": "SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936",
       "status": "confirmed",
-      "assignee": "tester",
-      "notes": null,
-      "created_at": "2026-06-16T03:20:31.353721",
-      "updated_at": "2026-06-16T03:27:52.994331",
+      "assignee": "zhangsan",
+      "notes": "已人工核实可接受",
+      "created_at": "2026-06-16T04:04:02.812345",
+      "updated_at": "2026-06-16T04:04:03.384282",
       "detail": {
         "type": "bad_checksum"
       }
@@ -81,11 +81,11 @@
       "severity": "blocking",
       "file_path": "data/wrong_size.dat",
       "message": "Size mismatch: expected 539, got 39",
-      "status": "open",
-      "assignee": null,
-      "notes": null,
-      "created_at": "2026-06-16T03:20:31.353847",
-      "updated_at": "2026-06-16T03:20:31.353851",
+      "status": "confirmed",
+      "assignee": "zhangsan",
+      "notes": "已人工核实可接受",
+      "created_at": "2026-06-16T04:04:02.812418",
+      "updated_at": "2026-06-16T04:04:03.541469",
       "detail": {
         "type": "size_mismatch"
       }
@@ -96,26 +96,26 @@
       "severity": "blocking",
       "file_path": "data/deleted_file.dat",
       "message": "File not found: data/deleted_file.dat",
-      "status": "open",
-      "assignee": null,
-      "notes": null,
-      "created_at": "2026-06-16T03:20:31.354551",
-      "updated_at": "2026-06-16T03:20:31.354557",
+      "status": "confirmed",
+      "assignee": "zhangsan",
+      "notes": "重开后补充完成复核",
+      "created_at": "2026-06-16T04:04:02.813065",
+      "updated_at": "2026-06-16T04:04:05.070888",
       "detail": {
         "type": "missing_file"
       }
     },
     {
-      "id": "28d3b40711d7",
+      "id": "090adb204ba6",
       "type": "outside_backup_window",
       "severity": "confirmable",
       "file_path": "data/old_file.dat",
-      "message": "File mtime 2026-06-09T03:04:45.674929 outside backup window [2026-06-16T01:04:45.674929, 2026-06-16T03:04:45.674929]",
+      "message": "File mtime 2026-06-09T03:49:31.611317 outside backup window [2026-06-16T01:49:31.611317, 2026-06-16T03:49:31.611317]",
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:20:31.355354",
-      "updated_at": "2026-06-16T03:20:31.355357",
+      "created_at": "2026-06-16T04:04:02.813521",
+      "updated_at": "2026-06-16T04:04:02.813523",
       "detail": {
         "type": "outside_window"
       }
@@ -129,8 +129,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:20:31.356183",
-      "updated_at": "2026-06-16T03:20:31.356188",
+      "created_at": "2026-06-16T04:04:02.813874",
+      "updated_at": "2026-06-16T04:04:02.813877",
       "detail": {
         "type": "unknown_business_line"
       }
@@ -144,8 +144,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T03:20:31.356200",
-      "updated_at": "2026-06-16T03:20:31.356202",
+      "created_at": "2026-06-16T04:04:02.813889",
+      "updated_at": "2026-06-16T04:04:02.813891",
       "detail": {
         "field": "revocation_list"
       }
@@ -166,23 +166,46 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "updated_at": "2026-06-16T03:20:31.353732",
-      "timestamp": "2026-06-16T03:27:52.994242"
+      "updated_at": "2026-06-16T04:04:02.812353",
+      "timestamp": "2026-06-16T04:04:03.384254"
+    },
+    {
+      "issue_id": "ced10514917e",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "updated_at": "2026-06-16T04:04:02.812419",
+      "timestamp": "2026-06-16T04:04:03.541430"
+    },
+    {
+      "issue_id": "79ddd6fc0c30",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "updated_at": "2026-06-16T04:04:02.813072",
+      "timestamp": "2026-06-16T04:04:05.070856"
     }
   ],
-  "status": "open",
-  "signoff": null,
+  "status": "finalized",
+  "signoff": {
+    "signer": "dept_manager",
+    "reason": "所有 blocking 已复核完成，批次可归档",
+    "timestamp": "2026-06-16T04:04:05.229179",
+    "forced": false,
+    "unresolved_blocking_count": 0,
+    "unresolved_confirmable_count": 3
+  },
   "reopen_records": [
     {
-      "reopener": "ops",
-      "reason": "发现漏处理，需补充复核",
-      "timestamp": "2026-06-16T03:27:23.077061",
+      "reopener": "zhangsan",
+      "reason": "上轮签收漏处理 1 条 blocking，需补复核",
+      "timestamp": "2026-06-16T04:04:04.754742",
       "previous_signoff": {
-        "signer": "manager",
-        "reason": "测试强制放行",
-        "timestamp": "2026-06-16T03:26:58.449045",
+        "signer": "dept_manager",
+        "reason": "经 2024-Q2 备份风险评审会审批，剩余 1 条 SHA 不匹配可追溯到源端已知故障，特批放行",
+        "timestamp": "2026-06-16T04:04:03.855776",
         "forced": true,
-        "unresolved_blocking_count": 3,
+        "unresolved_blocking_count": 1,
         "unresolved_confirmable_count": 3
       }
     }
@@ -192,36 +215,16 @@
       "action": "precheck",
       "actor": null,
       "reason": null,
-      "timestamp": "2026-06-16T03:20:31.356241",
+      "timestamp": "2026-06-16T04:04:02.813921",
       "detail": {
         "new_issues": 6
       }
     },
     {
-      "action": "finalize",
-      "actor": "manager",
-      "reason": "测试强制放行",
-      "timestamp": "2026-06-16T03:26:58.449090",
-      "detail": {
-        "forced": true,
-        "unresolved_blocking": 3,
-        "unresolved_confirmable": 3
-      }
-    },
-    {
-      "action": "reopen",
-      "actor": "ops",
-      "reason": "发现漏处理，需补充复核",
-      "timestamp": "2026-06-16T03:27:23.077113",
-      "detail": {
-        "reopen_count": 1
-      }
-    },
-    {
       "action": "review",
-      "actor": "tester",
-      "reason": null,
-      "timestamp": "2026-06-16T03:27:52.994346",
+      "actor": "zhangsan",
+      "reason": "已人工核实可接受",
+      "timestamp": "2026-06-16T04:04:03.384288",
       "detail": {
         "issue_id": "02d8013c22e5",
         "old_status": "open",
@@ -229,16 +232,69 @@
       }
     },
     {
+      "action": "review",
+      "actor": "zhangsan",
+      "reason": "已人工核实可接受",
+      "timestamp": "2026-06-16T04:04:03.541475",
+      "detail": {
+        "issue_id": "ced10514917e",
+        "old_status": "open",
+        "new_status": "confirmed"
+      }
+    },
+    {
+      "action": "finalize",
+      "actor": "dept_manager",
+      "reason": "经 2024-Q2 备份风险评审会审批，剩余 1 条 SHA 不匹配可追溯到源端已知故障，特批放行",
+      "timestamp": "2026-06-16T04:04:03.855808",
+      "detail": {
+        "forced": true,
+        "unresolved_blocking": 1,
+        "unresolved_confirmable": 3
+      }
+    },
+    {
+      "action": "reopen",
+      "actor": "zhangsan",
+      "reason": "上轮签收漏处理 1 条 blocking，需补复核",
+      "timestamp": "2026-06-16T04:04:04.754788",
+      "detail": {
+        "reopen_count": 1
+      }
+    },
+    {
+      "action": "review",
+      "actor": "zhangsan",
+      "reason": "重开后补充完成复核",
+      "timestamp": "2026-06-16T04:04:05.070893",
+      "detail": {
+        "issue_id": "79ddd6fc0c30",
+        "old_status": "open",
+        "new_status": "confirmed"
+      }
+    },
+    {
+      "action": "finalize",
+      "actor": "dept_manager",
+      "reason": "所有 blocking 已复核完成，批次可归档",
+      "timestamp": "2026-06-16T04:04:05.229227",
+      "detail": {
+        "forced": false,
+        "unresolved_blocking": 0,
+        "unresolved_confirmable": 3
+      }
+    },
+    {
       "action": "export",
       "actor": null,
       "reason": null,
-      "timestamp": "2026-06-16T03:27:53.617731",
+      "timestamp": "2026-06-16T04:04:05.521934",
       "detail": {
         "format": "all",
-        "output_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup\\reports"
+        "output_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup\\reports_doc"
       }
     }
   ],
-  "created_at": "2026-06-16T03:20:31.121705",
-  "updated_at": "2026-06-16T03:27:53.622221"
+  "created_at": "2026-06-16T04:04:02.670560",
+  "updated_at": "2026-06-16T04:04:05.524312"
 }
