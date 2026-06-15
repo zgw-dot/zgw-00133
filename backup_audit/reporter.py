@@ -3,9 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from .models import AuditBatch, Issue, IssueSeverity, IssueStatus
+from .waiver import WaiverStore, WaiverRule
 
 
 def group_issues_by_severity(batch: AuditBatch) -> Dict[str, List[Issue]]:
@@ -25,9 +26,54 @@ def group_issues_by_status(batch: AuditBatch) -> Dict[str, List[Issue]]:
     return grouped
 
 
+def group_issues_by_waiver(
+    batch: AuditBatch,
+    store: WaiverStore,
+) -> Tuple[
+    Dict[str, List[Issue]],
+    Dict[str, List[Tuple[Issue, Optional[WaiverRule]]]],
+]:
+    active: Dict[str, List[Issue]] = {
+        IssueSeverity.BLOCKING.value: [],
+        IssueSeverity.CONFIRMABLE.value: [],
+    }
+    waived: Dict[str, List[Tuple[Issue, Optional[WaiverRule]]]] = {
+        IssueSeverity.BLOCKING.value: [],
+        IssueSeverity.CONFIRMABLE.value: [],
+    }
+    for issue in batch.issues:
+        sev = issue.severity.value
+        if issue.waived:
+            rule = None
+            if issue.waived_by_rule_id:
+                rule = store.get_rule(issue.waived_by_rule_id)
+            waived[sev].append((issue, rule))
+        else:
+            active[sev].append(issue)
+    return active, waived
+
+
 def export_json_report(batch: AuditBatch, output_path: str) -> str:
+    store = WaiverStore()
     grouped_severity = group_issues_by_severity(batch)
     grouped_status = group_issues_by_status(batch)
+    active_grouped, waived_grouped = group_issues_by_waiver(batch, store)
+
+    active_blocking = [i.to_dict() for i in active_grouped[IssueSeverity.BLOCKING.value]]
+    active_confirmable = [i.to_dict() for i in active_grouped[IssueSeverity.CONFIRMABLE.value]]
+    waived_blocking = []
+    waived_confirmable = []
+
+    for issue, rule in waived_grouped[IssueSeverity.BLOCKING.value]:
+        item = issue.to_dict()
+        if rule:
+            item["waived_by_rule"] = rule.to_dict()
+        waived_blocking.append(item)
+    for issue, rule in waived_grouped[IssueSeverity.CONFIRMABLE.value]:
+        item = issue.to_dict()
+        if rule:
+            item["waived_by_rule"] = rule.to_dict()
+        waived_confirmable.append(item)
 
     report = {
         "batch_id": batch.id,
@@ -44,16 +90,25 @@ def export_json_report(batch: AuditBatch, output_path: str) -> str:
             "by_status": {
                 k: len(v) for k, v in grouped_status.items()
             },
+            "active_by_severity": {
+                k: len(v) for k, v in active_grouped.items()
+            },
+            "waived_by_severity": {
+                k: len(v) for k, v in waived_grouped.items()
+            },
             "scanned_files": len(batch.scanned_files),
             "manifest_files": len(batch.manifest.files),
             "unresolved_blocking": batch.count_unresolved_blocking(),
             "unresolved_confirmable": batch.count_unresolved_confirmable(),
+            "waived_total": batch.count_waived_issues(),
         },
         "signoff": batch.signoff.to_dict() if batch.signoff else None,
         "reopen_records": [r.to_dict() for r in batch.reopen_records],
         "operation_log": [l.to_dict() for l in batch.operation_log],
-        "blocking_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.BLOCKING.value]],
-        "confirmable_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.CONFIRMABLE.value]],
+        "blocking_issues": active_blocking,
+        "confirmable_issues": active_confirmable,
+        "waived_blocking_issues": waived_blocking,
+        "waived_confirmable_issues": waived_confirmable,
         "all_issues": [i.to_dict() for i in batch.issues],
     }
 
@@ -64,7 +119,9 @@ def export_json_report(batch: AuditBatch, output_path: str) -> str:
 
 
 def export_csv_report(batch: AuditBatch, output_path: str) -> str:
-    grouped = group_issues_by_severity(batch)
+    store = WaiverStore()
+    active_grouped, waived_grouped = group_issues_by_waiver(batch, store)
+    all_grouped = group_issues_by_severity(batch)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -105,20 +162,25 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
 
         writer.writerow(["--- 概要统计 ---"])
         writer.writerow(["问题总数", len(batch.issues)])
-        writer.writerow(["阻断问题 (Blocking)", len(grouped[IssueSeverity.BLOCKING.value])])
-        writer.writerow(["可确认问题 (Confirmable)", len(grouped[IssueSeverity.CONFIRMABLE.value])])
-        writer.writerow(["未处理阻断问题", batch.count_unresolved_blocking()])
-        writer.writerow(["未处理可确认问题", batch.count_unresolved_confirmable()])
+        writer.writerow(["阻断问题 (Blocking)", len(all_grouped[IssueSeverity.BLOCKING.value])])
+        writer.writerow(["  - 活跃阻断问题", len(active_grouped[IssueSeverity.BLOCKING.value])])
+        writer.writerow(["  - 已豁免阻断问题", len(waived_grouped[IssueSeverity.BLOCKING.value])])
+        writer.writerow(["可确认问题 (Confirmable)", len(all_grouped[IssueSeverity.CONFIRMABLE.value])])
+        writer.writerow(["  - 活跃可确认问题", len(active_grouped[IssueSeverity.CONFIRMABLE.value])])
+        writer.writerow(["  - 已豁免可确认问题", len(waived_grouped[IssueSeverity.CONFIRMABLE.value])])
+        writer.writerow(["未处理阻断问题(不含豁免)", batch.count_unresolved_blocking()])
+        writer.writerow(["未处理可确认问题(不含豁免)", batch.count_unresolved_confirmable()])
+        writer.writerow(["已豁免问题总计", batch.count_waived_issues()])
         writer.writerow(["已扫描文件", len(batch.scanned_files)])
         writer.writerow(["Manifest文件总数", len(batch.manifest.files)])
         writer.writerow([])
 
-        writer.writerow(["--- 阻断问题详情 (必须修复) ---"])
+        writer.writerow(["--- 阻断问题详情 (活跃, 必须修复) ---"])
         writer.writerow([
             "问题ID", "类型", "文件路径", "严重程度", "状态",
             "处理人", "备注", "消息", "创建时间", "更新时间"
         ])
-        for issue in grouped[IssueSeverity.BLOCKING.value]:
+        for issue in active_grouped[IssueSeverity.BLOCKING.value]:
             writer.writerow([
                 issue.id,
                 issue.type.value,
@@ -133,12 +195,12 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
             ])
         writer.writerow([])
 
-        writer.writerow(["--- 可人工确认问题详情 ---"])
+        writer.writerow(["--- 可人工确认问题详情 (活跃) ---"])
         writer.writerow([
             "问题ID", "类型", "文件路径", "严重程度", "状态",
             "处理人", "备注", "消息", "创建时间", "更新时间"
         ])
-        for issue in grouped[IssueSeverity.CONFIRMABLE.value]:
+        for issue in active_grouped[IssueSeverity.CONFIRMABLE.value]:
             writer.writerow([
                 issue.id,
                 issue.type.value,
@@ -152,6 +214,30 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
                 issue.updated_at,
             ])
         writer.writerow([])
+
+        if batch.count_waived_issues() > 0:
+            writer.writerow(["--- 已豁免问题详情 (追踪规则) ---"])
+            writer.writerow([
+                "问题ID", "类型", "文件路径", "严重程度", "原状态",
+                "豁免规则ID", "豁免理由", "生效人", "生效时间",
+                "规则说明", "原始消息"
+            ])
+            for sev in [IssueSeverity.BLOCKING.value, IssueSeverity.CONFIRMABLE.value]:
+                for issue, rule in waived_grouped[sev]:
+                    writer.writerow([
+                        issue.id,
+                        issue.type.value,
+                        issue.file_path,
+                        issue.severity.value,
+                        issue.status.value,
+                        issue.waived_by_rule_id or "",
+                        issue.waived_reason or "",
+                        rule.actor if rule else "",
+                        issue.waived_at or "",
+                        rule.description if rule else "",
+                        issue.message,
+                    ])
+            writer.writerow([])
 
         if batch.operation_log:
             writer.writerow(["--- 操作日志 ---"])
@@ -172,6 +258,8 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
 def print_summary(batch: AuditBatch) -> None:
     grouped_severity = group_issues_by_severity(batch)
     grouped_status = group_issues_by_status(batch)
+    waived_counts = batch.count_waived_by_severity()
+    active_counts = batch.count_active_issues_by_severity()
 
     print(f"\n批次 ID: {batch.id}")
     print(f"批次状态: {batch.status.value}")
@@ -189,10 +277,11 @@ def print_summary(batch: AuditBatch) -> None:
     print(f"Manifest: {batch.manifest_path}")
     print(f"\n=== 概要 ===")
     print(f"  问题总数:    {len(batch.issues)}")
-    print(f"  阻断问题:    {len(grouped_severity[IssueSeverity.BLOCKING.value])} (必须修复)")
-    print(f"  可确认问题:  {len(grouped_severity[IssueSeverity.CONFIRMABLE.value])} (人工确认)")
-    print(f"  未处理阻断:  {batch.count_unresolved_blocking()}")
-    print(f"  未处理可确认:{batch.count_unresolved_confirmable()}")
+    print(f"  阻断问题:    {len(grouped_severity[IssueSeverity.BLOCKING.value])} (活跃={active_counts['blocking']}, 已豁免={waived_counts['blocking']})")
+    print(f"  可确认问题:  {len(grouped_severity[IssueSeverity.CONFIRMABLE.value])} (活跃={active_counts['confirmable']}, 已豁免={waived_counts['confirmable']})")
+    print(f"  未处理阻断:  {batch.count_unresolved_blocking()} (不含豁免)")
+    print(f"  未处理可确认:{batch.count_unresolved_confirmable()} (不含豁免)")
+    print(f"  已豁免总计:  {batch.count_waived_issues()}")
     print(f"\n  按状态:")
     for status, issues in grouped_status.items():
         if len(issues) > 0:

@@ -48,6 +48,8 @@ class OperationType(str, Enum):
     FINALIZE = "finalize"
     REOPEN = "reopen"
     EXPORT = "export"
+    WAIVER_APPLY = "waiver_apply"
+    WAIVER_RESCAN = "waiver_rescan"
 
 
 @dataclass
@@ -140,6 +142,10 @@ class Issue:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     detail: Dict[str, Any] = field(default_factory=dict)
+    waived: bool = False
+    waived_by_rule_id: Optional[str] = None
+    waived_reason: Optional[str] = None
+    waived_at: Optional[str] = None
 
     @classmethod
     def create(
@@ -176,6 +182,20 @@ class Issue:
             self.notes = notes
         self.updated_at = datetime.now().isoformat()
 
+    def apply_waiver(self, rule_id: str, reason: str) -> None:
+        self.waived = True
+        self.waived_by_rule_id = rule_id
+        self.waived_reason = reason
+        self.waived_at = datetime.now().isoformat()
+        self.updated_at = self.waived_at
+
+    def clear_waiver(self) -> None:
+        self.waived = False
+        self.waived_by_rule_id = None
+        self.waived_reason = None
+        self.waived_at = None
+        self.updated_at = datetime.now().isoformat()
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["type"] = self.type.value
@@ -197,6 +217,10 @@ class Issue:
             created_at=data["created_at"],
             updated_at=data["updated_at"],
             detail=data.get("detail", {}),
+            waived=data.get("waived", False),
+            waived_by_rule_id=data.get("waived_by_rule_id"),
+            waived_reason=data.get("waived_reason"),
+            waived_at=data.get("waived_at"),
         )
 
 
@@ -383,6 +407,7 @@ class AuditBatch:
             1 for issue in self.issues
             if issue.severity == IssueSeverity.BLOCKING
             and issue.status in (IssueStatus.OPEN, IssueStatus.PENDING_FIX)
+            and not issue.waived
         )
 
     def count_unresolved_confirmable(self) -> int:
@@ -390,7 +415,25 @@ class AuditBatch:
             1 for issue in self.issues
             if issue.severity == IssueSeverity.CONFIRMABLE
             and issue.status in (IssueStatus.OPEN, IssueStatus.PENDING_FIX)
+            and not issue.waived
         )
+
+    def count_waived_issues(self) -> int:
+        return sum(1 for issue in self.issues if issue.waived)
+
+    def count_waived_by_severity(self) -> Dict[str, int]:
+        result = {"blocking": 0, "confirmable": 0}
+        for issue in self.issues:
+            if issue.waived:
+                result[issue.severity.value] += 1
+        return result
+
+    def count_active_issues_by_severity(self) -> Dict[str, int]:
+        result = {"blocking": 0, "confirmable": 0}
+        for issue in self.issues:
+            if not issue.waived:
+                result[issue.severity.value] += 1
+        return result
 
     def log_operation(
         self,
