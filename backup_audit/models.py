@@ -35,6 +35,98 @@ class IssueType(str, Enum):
     EMPTY_REVOCATION = "empty_revocation"
 
 
+class BatchStatus(str, Enum):
+    OPEN = "open"
+    FINALIZED = "finalized"
+
+
+class OperationType(str, Enum):
+    IMPORT = "import"
+    PRECHECK = "precheck"
+    REVIEW = "review"
+    UNDO = "undo"
+    FINALIZE = "finalize"
+    REOPEN = "reopen"
+    EXPORT = "export"
+
+
+@dataclass
+class Signoff:
+    signer: str
+    reason: str
+    timestamp: str
+    forced: bool = False
+    unresolved_blocking_count: int = 0
+    unresolved_confirmable_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Signoff":
+        return cls(
+            signer=data["signer"],
+            reason=data["reason"],
+            timestamp=data["timestamp"],
+            forced=data.get("forced", False),
+            unresolved_blocking_count=data.get("unresolved_blocking_count", 0),
+            unresolved_confirmable_count=data.get("unresolved_confirmable_count", 0),
+        )
+
+
+@dataclass
+class ReopenRecord:
+    reopener: str
+    reason: str
+    timestamp: str
+    previous_signoff: Signoff
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "reopener": self.reopener,
+            "reason": self.reason,
+            "timestamp": self.timestamp,
+            "previous_signoff": self.previous_signoff.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ReopenRecord":
+        return cls(
+            reopener=data["reopener"],
+            reason=data["reason"],
+            timestamp=data["timestamp"],
+            previous_signoff=Signoff.from_dict(data["previous_signoff"]),
+        )
+
+
+@dataclass
+class OperationLogEntry:
+    action: OperationType
+    actor: Optional[str]
+    reason: Optional[str] = None
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    detail: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action.value,
+            "actor": self.actor,
+            "reason": self.reason,
+            "timestamp": self.timestamp,
+            "detail": self.detail,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OperationLogEntry":
+        return cls(
+            action=OperationType(data["action"]),
+            actor=data.get("actor"),
+            reason=data.get("reason"),
+            timestamp=data["timestamp"],
+            detail=data.get("detail", {}),
+        )
+
+
 @dataclass
 class Issue:
     id: str
@@ -178,6 +270,10 @@ class AuditBatch:
     issues: List[Issue] = field(default_factory=list)
     scanned_files: List[str] = field(default_factory=list)
     review_history: List[Dict[str, Any]] = field(default_factory=list)
+    status: BatchStatus = BatchStatus.OPEN
+    signoff: Optional[Signoff] = None
+    reopen_records: List[ReopenRecord] = field(default_factory=list)
+    operation_log: List[OperationLogEntry] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     storage_path: Optional[str] = None
@@ -191,6 +287,10 @@ class AuditBatch:
             "issues": [i.to_dict() for i in self.issues],
             "scanned_files": self.scanned_files,
             "review_history": self.review_history,
+            "status": self.status.value,
+            "signoff": self.signoff.to_dict() if self.signoff else None,
+            "reopen_records": [r.to_dict() for r in self.reopen_records],
+            "operation_log": [l.to_dict() for l in self.operation_log],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -205,6 +305,10 @@ class AuditBatch:
             issues=[Issue.from_dict(i) for i in data.get("issues", [])],
             scanned_files=data.get("scanned_files", []),
             review_history=data.get("review_history", []),
+            status=BatchStatus(data.get("status", "open")),
+            signoff=Signoff.from_dict(data["signoff"]) if data.get("signoff") else None,
+            reopen_records=[ReopenRecord.from_dict(r) for r in data.get("reopen_records", [])],
+            operation_log=[OperationLogEntry.from_dict(l) for l in data.get("operation_log", [])],
             created_at=data["created_at"],
             updated_at=data["updated_at"],
         )
@@ -270,3 +374,91 @@ class AuditBatch:
         if not self.review_history:
             return None
         return self.review_history.pop()
+
+    def is_readonly(self) -> bool:
+        return self.status == BatchStatus.FINALIZED
+
+    def count_unresolved_blocking(self) -> int:
+        return sum(
+            1 for issue in self.issues
+            if issue.severity == IssueSeverity.BLOCKING
+            and issue.status in (IssueStatus.OPEN, IssueStatus.PENDING_FIX)
+        )
+
+    def count_unresolved_confirmable(self) -> int:
+        return sum(
+            1 for issue in self.issues
+            if issue.severity == IssueSeverity.CONFIRMABLE
+            and issue.status in (IssueStatus.OPEN, IssueStatus.PENDING_FIX)
+        )
+
+    def log_operation(
+        self,
+        action: OperationType,
+        actor: Optional[str] = None,
+        reason: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.operation_log.append(OperationLogEntry(
+            action=action,
+            actor=actor,
+            reason=reason,
+            detail=detail or {},
+        ))
+
+    def finalize(
+        self,
+        signer: str,
+        reason: str,
+        force: bool = False,
+    ) -> bool:
+        unresolved_blocking = self.count_unresolved_blocking()
+        unresolved_confirmable = self.count_unresolved_confirmable()
+
+        if unresolved_blocking > 0 and not force:
+            return False
+
+        self.signoff = Signoff(
+            signer=signer,
+            reason=reason,
+            timestamp=datetime.now().isoformat(),
+            forced=force,
+            unresolved_blocking_count=unresolved_blocking,
+            unresolved_confirmable_count=unresolved_confirmable,
+        )
+        self.status = BatchStatus.FINALIZED
+        self.log_operation(
+            action=OperationType.FINALIZE,
+            actor=signer,
+            reason=reason,
+            detail={
+                "forced": force,
+                "unresolved_blocking": unresolved_blocking,
+                "unresolved_confirmable": unresolved_confirmable,
+            },
+        )
+        return True
+
+    def reopen(
+        self,
+        reopener: str,
+        reason: str,
+    ) -> None:
+        if self.signoff:
+            self.reopen_records.append(ReopenRecord(
+                reopener=reopener,
+                reason=reason,
+                timestamp=datetime.now().isoformat(),
+                previous_signoff=self.signoff,
+            ))
+
+        self.signoff = None
+        self.status = BatchStatus.OPEN
+        self.log_operation(
+            action=OperationType.REOPEN,
+            actor=reopener,
+            reason=reason,
+            detail={
+                "reopen_count": len(self.reopen_records),
+            },
+        )

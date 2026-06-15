@@ -35,6 +35,7 @@ def export_json_report(batch: AuditBatch, output_path: str) -> str:
         "backup_dir": batch.backup_dir,
         "created_at": batch.created_at,
         "generated_at": batch.updated_at,
+        "status": batch.status.value,
         "summary": {
             "total_issues": len(batch.issues),
             "by_severity": {
@@ -45,7 +46,12 @@ def export_json_report(batch: AuditBatch, output_path: str) -> str:
             },
             "scanned_files": len(batch.scanned_files),
             "manifest_files": len(batch.manifest.files),
+            "unresolved_blocking": batch.count_unresolved_blocking(),
+            "unresolved_confirmable": batch.count_unresolved_confirmable(),
         },
+        "signoff": batch.signoff.to_dict() if batch.signoff else None,
+        "reopen_records": [r.to_dict() for r in batch.reopen_records],
+        "operation_log": [l.to_dict() for l in batch.operation_log],
         "blocking_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.BLOCKING.value]],
         "confirmable_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.CONFIRMABLE.value]],
         "all_issues": [i.to_dict() for i in batch.issues],
@@ -66,16 +72,43 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
 
         writer.writerow(["=== 离线备份包验收报告 ==="])
         writer.writerow(["批次ID", batch.id])
+        writer.writerow(["批次状态", batch.status.value])
         writer.writerow(["Manifest路径", batch.manifest_path])
         writer.writerow(["备份目录", batch.backup_dir])
         writer.writerow(["创建时间", batch.created_at])
         writer.writerow(["报告时间", batch.updated_at])
         writer.writerow([])
 
+        if batch.signoff:
+            writer.writerow(["--- 签收摘要 ---"])
+            writer.writerow(["签收状态", "强制放行" if batch.signoff.forced else "正常签收"])
+            writer.writerow(["签收人", batch.signoff.signer])
+            writer.writerow(["签收理由", batch.signoff.reason])
+            writer.writerow(["签收时间", batch.signoff.timestamp])
+            writer.writerow(["未处理阻断问题数", batch.signoff.unresolved_blocking_count])
+            writer.writerow(["未处理可确认问题数", batch.signoff.unresolved_confirmable_count])
+            writer.writerow([])
+
+        if batch.reopen_records:
+            writer.writerow(["--- 重开记录 ---"])
+            writer.writerow(["序号", "重开人", "重开理由", "重开时间", "前次签收人", "前次签收时间"])
+            for i, record in enumerate(batch.reopen_records, 1):
+                writer.writerow([
+                    i,
+                    record.reopener,
+                    record.reason,
+                    record.timestamp,
+                    record.previous_signoff.signer,
+                    record.previous_signoff.timestamp,
+                ])
+            writer.writerow([])
+
         writer.writerow(["--- 概要统计 ---"])
         writer.writerow(["问题总数", len(batch.issues)])
         writer.writerow(["阻断问题 (Blocking)", len(grouped[IssueSeverity.BLOCKING.value])])
         writer.writerow(["可确认问题 (Confirmable)", len(grouped[IssueSeverity.CONFIRMABLE.value])])
+        writer.writerow(["未处理阻断问题", batch.count_unresolved_blocking()])
+        writer.writerow(["未处理可确认问题", batch.count_unresolved_confirmable()])
         writer.writerow(["已扫描文件", len(batch.scanned_files)])
         writer.writerow(["Manifest文件总数", len(batch.manifest.files)])
         writer.writerow([])
@@ -118,6 +151,20 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
                 issue.created_at,
                 issue.updated_at,
             ])
+        writer.writerow([])
+
+        if batch.operation_log:
+            writer.writerow(["--- 操作日志 ---"])
+            writer.writerow(["序号", "操作类型", "操作人", "操作理由", "操作时间", "详情"])
+            for i, entry in enumerate(batch.operation_log, 1):
+                writer.writerow([
+                    i,
+                    entry.action.value,
+                    entry.actor or "",
+                    entry.reason or "",
+                    entry.timestamp,
+                    str(entry.detail),
+                ])
 
     return output_path
 
@@ -127,14 +174,28 @@ def print_summary(batch: AuditBatch) -> None:
     grouped_status = group_issues_by_status(batch)
 
     print(f"\n批次 ID: {batch.id}")
+    print(f"批次状态: {batch.status.value}")
+    if batch.signoff:
+        print(f"签收状态: {'强制放行' if batch.signoff.forced else '正常签收'}")
+        print(f"签收人: {batch.signoff.signer}")
+        print(f"签收时间: {batch.signoff.timestamp}")
+        if batch.signoff.forced:
+            print(f"[!] 未处理阻断问题: {batch.signoff.unresolved_blocking_count} 个")
+        if batch.signoff.unresolved_confirmable_count > 0:
+            print(f"未处理可确认问题: {batch.signoff.unresolved_confirmable_count} 个")
+    if batch.reopen_records:
+        print(f"重开次数: {len(batch.reopen_records)}")
     print(f"备份目录: {batch.backup_dir}")
     print(f"Manifest: {batch.manifest_path}")
     print(f"\n=== 概要 ===")
     print(f"  问题总数:    {len(batch.issues)}")
     print(f"  阻断问题:    {len(grouped_severity[IssueSeverity.BLOCKING.value])} (必须修复)")
     print(f"  可确认问题:  {len(grouped_severity[IssueSeverity.CONFIRMABLE.value])} (人工确认)")
+    print(f"  未处理阻断:  {batch.count_unresolved_blocking()}")
+    print(f"  未处理可确认:{batch.count_unresolved_confirmable()}")
     print(f"\n  按状态:")
     for status, issues in grouped_status.items():
         if len(issues) > 0:
             print(f"    {status}: {len(issues)}")
     print(f"  已扫描文件:  {len(batch.scanned_files)}/{len(batch.manifest.files)}")
+    print(f"  操作日志:    {len(batch.operation_log)} 条")

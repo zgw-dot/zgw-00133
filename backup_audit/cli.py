@@ -6,7 +6,7 @@ import os
 import sys
 from typing import List, Optional
 
-from .models import AuditBatch, IssueStatus
+from .models import AuditBatch, IssueStatus, OperationType
 from .reporter import (
     export_csv_report,
     export_json_report,
@@ -49,6 +49,21 @@ def save_batch(batch: AuditBatch, backup_dir: str) -> str:
     return batch.save(storage_dir)
 
 
+def check_readonly(batch: AuditBatch, operation: str) -> Optional[int]:
+    if batch.is_readonly():
+        signer = batch.signoff.signer if batch.signoff else "未知"
+        sign_time = batch.signoff.timestamp if batch.signoff else "未知"
+        print(
+            f"错误: 批次已签收，禁止执行 {operation} 操作。\n"
+            f"  签收人: {signer}\n"
+            f"  签收时间: {sign_time}\n"
+            f"如需继续编辑，请使用 reopen 命令。",
+            file=sys.stderr,
+        )
+        return 3
+    return None
+
+
 def cmd_import(args: argparse.Namespace) -> int:
     manifest_path = os.path.abspath(args.manifest)
     backup_dir = os.path.abspath(args.backup_dir)
@@ -62,9 +77,14 @@ def cmd_import(args: argparse.Namespace) -> int:
         return 1
 
     existing = load_batch(backup_dir)
-    if existing and not args.force:
-        print(f"警告: 备份目录已有批次 {existing.id}，使用 --force 重新导入，或使用 resume 继续")
-        return 2
+    if existing:
+        if existing.is_readonly():
+            rc = check_readonly(existing, "import --force")
+            if rc is not None:
+                return rc
+        if not args.force:
+            print(f"警告: 备份目录已有批次 {existing.id}，使用 --force 重新导入，或使用 resume 继续")
+            return 2
 
     try:
         manifest = load_manifest(manifest_path)
@@ -94,10 +114,18 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         print("错误: 未找到批次，请先运行 import", file=sys.stderr)
         return 1
 
+    rc = check_readonly(batch, "precheck")
+    if rc is not None:
+        return rc
+
     print(f"运行预检: 批次 {batch.id}")
     print(f"  (预检不会修改源备份文件)")
 
     new_issues = run_precheck(batch)
+    batch.log_operation(
+        action=OperationType.PRECHECK,
+        detail={"new_issues": len(new_issues)},
+    )
     save_batch(batch, backup_dir)
 
     print(f"\n预检完成:")
@@ -155,6 +183,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         print("错误: 未找到批次", file=sys.stderr)
         return 1
 
+    rc = check_readonly(batch, "review")
+    if rc is not None:
+        return rc
+
     issue = batch.get_issue(args.issue_id)
     if not issue:
         print(f"错误: 未找到问题 ID: {args.issue_id}", file=sys.stderr)
@@ -173,6 +205,16 @@ def cmd_review(args: argparse.Namespace) -> int:
         status=status,
         assignee=args.assignee,
         notes=args.notes,
+    )
+    batch.log_operation(
+        action=OperationType.REVIEW,
+        actor=args.assignee,
+        reason=args.notes,
+        detail={
+            "issue_id": issue.id,
+            "old_status": batch.review_history[-1]["status"],
+            "new_status": status.value if status else issue.status.value,
+        },
     )
     save_batch(batch, backup_dir)
 
@@ -197,6 +239,11 @@ def cmd_export(args: argparse.Namespace) -> int:
     os.makedirs(output_dir, exist_ok=True)
 
     fmt = args.format
+    batch.log_operation(
+        action=OperationType.EXPORT,
+        detail={"format": fmt, "output_dir": output_dir},
+    )
+
     if fmt == "json" or fmt == "all":
         json_path = os.path.join(output_dir, f"audit_report_{batch.id}.json")
         export_json_report(batch, json_path)
@@ -206,6 +253,8 @@ def cmd_export(args: argparse.Namespace) -> int:
         csv_path = os.path.join(output_dir, f"audit_report_{batch.id}.csv")
         export_csv_report(batch, csv_path)
         print(f"CSV 报告: {csv_path}")
+
+    save_batch(batch, backup_dir)
 
     print_summary(batch)
     return 0
@@ -233,6 +282,10 @@ def cmd_undo(args: argparse.Namespace) -> int:
         print("错误: 未找到批次", file=sys.stderr)
         return 1
 
+    rc = check_readonly(batch, "undo")
+    if rc is not None:
+        return rc
+
     snapshot = batch.pop_review_snapshot()
     if snapshot is None:
         print("没有可撤销的复核操作（撤销历史为空）。", file=sys.stderr)
@@ -255,6 +308,13 @@ def cmd_undo(args: argparse.Namespace) -> int:
     issue.notes = prev_notes
     issue.updated_at = prev_updated_at or issue.updated_at
 
+    batch.log_operation(
+        action=OperationType.UNDO,
+        detail={
+            "issue_id": issue_id,
+            "restored_status": prev_status.value,
+        },
+    )
     save_batch(batch, backup_dir)
 
     print(f"已撤销上一条复核: 问题 {issue_id}")
@@ -268,6 +328,120 @@ def cmd_undo(args: argparse.Namespace) -> int:
     else:
         print(f"  备注: (无)")
     print(f"  剩余可撤销次数: {len(batch.review_history)}")
+    return 0
+
+
+def cmd_finalize(args: argparse.Namespace) -> int:
+    backup_dir = os.path.abspath(args.backup_dir)
+    batch = load_batch(backup_dir, args.batch_id)
+
+    if not batch:
+        print("错误: 未找到批次", file=sys.stderr)
+        return 1
+
+    if batch.is_readonly():
+        signer = batch.signoff.signer if batch.signoff else "未知"
+        sign_time = batch.signoff.timestamp if batch.signoff else "未知"
+        print(
+            f"错误: 批次已签收，不能重复签收。\n"
+            f"  签收人: {signer}\n"
+            f"  签收时间: {sign_time}\n"
+            f"如需重新签收，请先使用 reopen 命令。",
+            file=sys.stderr,
+        )
+        return 4
+
+    unresolved_blocking = batch.count_unresolved_blocking()
+    unresolved_confirmable = batch.count_unresolved_confirmable()
+
+    if unresolved_blocking > 0:
+        if not args.force:
+            print(
+                f"错误: 存在 {unresolved_blocking} 个未处理的阻断问题，不能签收。\n"
+                f"请先处理所有阻断问题，或使用 --force-with-reason 强制放行（需同时提供 --reason）。",
+                file=sys.stderr,
+            )
+            return 5
+        if not args.reason or not args.reason.strip():
+            print(
+                "错误: 强制放行必须提供 --reason 参数说明签收理由。",
+                file=sys.stderr,
+            )
+            return 6
+
+    if not args.reason or not args.reason.strip():
+        print(
+            "错误: 签收必须提供 --reason 参数说明签收理由。",
+            file=sys.stderr,
+        )
+        return 7
+
+    success = batch.finalize(
+        signer=args.signer,
+        reason=args.reason,
+        force=args.force,
+    )
+
+    if not success:
+        print(
+            f"错误: 签收失败，存在 {unresolved_blocking} 个未处理的阻断问题。",
+            file=sys.stderr,
+        )
+        return 5
+
+    save_batch(batch, backup_dir)
+
+    signoff = batch.signoff
+    print(f"批次已签收: {batch.id}")
+    print(f"  状态: {'强制放行' if signoff.forced else '正常签收'}")
+    print(f"  签收人: {signoff.signer}")
+    print(f"  签收理由: {signoff.reason}")
+    print(f"  签收时间: {signoff.timestamp}")
+    if signoff.forced:
+        print(f"  [!] 未处理阻断问题: {signoff.unresolved_blocking_count} 个")
+    if signoff.unresolved_confirmable_count > 0:
+        print(f"  未处理可确认问题: {signoff.unresolved_confirmable_count} 个")
+    print_summary(batch)
+    return 0
+
+
+def cmd_reopen(args: argparse.Namespace) -> int:
+    backup_dir = os.path.abspath(args.backup_dir)
+    batch = load_batch(backup_dir, args.batch_id)
+
+    if not batch:
+        print("错误: 未找到批次", file=sys.stderr)
+        return 1
+
+    if not batch.is_readonly():
+        print("错误: 批次未签收，无需重开。", file=sys.stderr)
+        return 8
+
+    if not args.reason or not args.reason.strip():
+        print(
+            "错误: 重开必须提供 --reason 参数说明重开理由。",
+            file=sys.stderr,
+        )
+        return 9
+
+    if not args.reopener or not args.reopener.strip():
+        print(
+            "错误: 重开必须提供 --reopener 参数说明重开人。",
+            file=sys.stderr,
+        )
+        return 10
+
+    batch.reopen(
+        reopener=args.reopener,
+        reason=args.reason,
+    )
+    save_batch(batch, backup_dir)
+
+    print(f"批次已重开，恢复编辑: {batch.id}")
+    print(f"  重开人: {args.reopener}")
+    print(f"  重开理由: {args.reason}")
+    print(f"  累计重开次数: {len(batch.reopen_records)}")
+    print_summary(batch)
     return 0
 
 
@@ -326,6 +500,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_undo.add_argument("backup_dir", help="备份包目录")
     p_undo.add_argument("--batch-id", help="指定批次 ID")
     p_undo.set_defaults(func=cmd_undo)
+
+    p_finalize = subparsers.add_parser("finalize", help="签收批次（阻断问题未处理时禁止，强制放行需说明理由）")
+    p_finalize.add_argument("backup_dir", help="备份包目录")
+    p_finalize.add_argument("--signer", required=True, help="签收人")
+    p_finalize.add_argument("--reason", required=True, help="签收理由（强制放行时必须填写）")
+    p_finalize.add_argument(
+        "--force-with-reason",
+        dest="force",
+        action="store_true",
+        help="强制放行：即使有未处理阻断问题也签收，必须同时提供 --reason",
+    )
+    p_finalize.add_argument("--batch-id", help="指定批次 ID")
+    p_finalize.set_defaults(func=cmd_finalize)
+
+    p_reopen = subparsers.add_parser("reopen", help="重开已签收批次，恢复编辑")
+    p_reopen.add_argument("backup_dir", help="备份包目录")
+    p_reopen.add_argument("--reopener", required=True, help="重开人")
+    p_reopen.add_argument("--reason", required=True, help="重开理由")
+    p_reopen.add_argument("--batch-id", help="指定批次 ID")
+    p_reopen.set_defaults(func=cmd_reopen)
 
     return parser
 

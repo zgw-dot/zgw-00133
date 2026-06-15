@@ -273,5 +273,332 @@ class TestCrossProcessExport(unittest.TestCase):
         self.assertIn("TEST-001", r.stdout)
 
 
+class TestSignoffBlocking(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_block_")
+        content = b"test for block"
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        make_temp_backup(self.tmp_dir, [
+            {"name": "good.dat", "content": content},
+            {"name": "bad.dat", "content": b"tampered", "sha256": wrong_hash},
+            {"name": "missing.dat", "content": b"not there", "size": 9999},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_block_signoff_with_unresolved_blocking(self):
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "admin", "--reason", "all good")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("未处理的阻断问题", r.stderr)
+        self.assertIn("不能签收", r.stderr)
+
+    def test_force_without_reason_rejected(self):
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "admin", "--force-with-reason")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_reason_required_even_for_clean_batch(self):
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "admin")
+        self.assertNotEqual(r.returncode, 0)
+
+
+class TestForcedSignoff(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_force_")
+        content = b"test for force"
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        make_temp_backup(self.tmp_dir, [
+            {"name": "good.dat", "content": content},
+            {"name": "bad.dat", "content": b"tampered", "sha256": wrong_hash},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_forced_signoff_with_reason(self):
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "manager",
+                     "--reason", "经评估风险可控，特批放行",
+                     "--force-with-reason")
+        self.assertEqual(r.returncode, 0, f"force signoff should succeed: {r.stderr}")
+        self.assertIn("批次已签收", r.stdout)
+        self.assertIn("强制放行", r.stdout)
+        self.assertIn("manager", r.stdout)
+        self.assertIn("经评估风险可控", r.stdout)
+
+    def test_batch_readonly_after_signoff(self):
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "manager",
+                "--reason", "risk accepted",
+                "--force-with-reason")
+
+        r = run_cli("precheck", self.tmp_dir)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("禁止执行 precheck 操作", r.stderr)
+
+    def test_duplicate_finalize_blocked(self):
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "manager",
+                "--reason", "risk accepted",
+                "--force-with-reason")
+
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "other", "--reason", "again")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("不能重复签收", r.stderr)
+
+    def test_review_blocked_after_signoff(self):
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "manager",
+                "--reason", "risk accepted",
+                "--force-with-reason")
+
+        issue_id = self._get_first_issue_id()
+        r = run_cli("review", self.tmp_dir, issue_id,
+                     "--status", "confirmed")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("禁止执行 review 操作", r.stderr)
+
+    def test_undo_blocked_after_signoff(self):
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "manager",
+                "--reason", "risk accepted",
+                "--force-with-reason")
+
+        r = run_cli("undo", self.tmp_dir)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("禁止执行 undo 操作", r.stderr)
+
+    def _get_first_issue_id(self) -> str:
+        state_dir = os.path.join(self.tmp_dir, ".audit_state")
+        for f in os.listdir(state_dir):
+            if f.startswith("batch_") and f.endswith(".json"):
+                with open(os.path.join(state_dir, f), "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                issues = data.get("issues", [])
+                if issues:
+                    return issues[0]["id"]
+        raise ValueError("no issues found")
+
+
+class TestReopenWorkflow(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_reopen_")
+        content = b"test for reopen"
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        make_temp_backup(self.tmp_dir, [
+            {"name": "good.dat", "content": content},
+            {"name": "bad.dat", "content": b"tampered", "sha256": wrong_hash},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "manager",
+                "--reason", "initial signoff",
+                "--force-with-reason")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_reopen_requires_reason_and_reopener(self):
+        r = run_cli("reopen", self.tmp_dir,
+                     "--reopener", "admin")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--reason", r.stderr)
+
+        r = run_cli("reopen", self.tmp_dir,
+                     "--reason", "need to fix")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--reopener", r.stderr)
+
+    def test_reopen_restores_editing(self):
+        r = run_cli("reopen", self.tmp_dir,
+                     "--reopener", "admin",
+                     "--reason", "发现漏处理的问题，需要补充复核")
+        self.assertEqual(r.returncode, 0, f"reopen should succeed: {r.stderr}")
+        self.assertIn("批次已重开", r.stdout)
+        self.assertIn("admin", r.stdout)
+        self.assertIn("发现漏处理的问题", r.stdout)
+
+        issue_id = self._get_first_issue_id()
+        r = run_cli("review", self.tmp_dir, issue_id,
+                     "--status", "confirmed",
+                     "--assignee", "tester")
+        self.assertEqual(r.returncode, 0)
+
+        r = run_cli("undo", self.tmp_dir)
+        self.assertEqual(r.returncode, 0)
+
+    def test_reopen_on_open_batch_rejected(self):
+        run_cli("reopen", self.tmp_dir,
+                "--reopener", "admin", "--reason", "fix")
+
+        r = run_cli("reopen", self.tmp_dir,
+                     "--reopener", "admin", "--reason", "again")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("批次未签收，无需重开", r.stderr)
+
+    def test_reopen_record_persisted(self):
+        run_cli("reopen", self.tmp_dir,
+                "--reopener", "admin",
+                "--reason", "fix issues")
+
+        state_dir = os.path.join(self.tmp_dir, ".audit_state")
+        for f in os.listdir(state_dir):
+            if f.startswith("batch_") and f.endswith(".json"):
+                with open(os.path.join(state_dir, f), "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                self.assertEqual(len(data["reopen_records"]), 1)
+                self.assertEqual(data["reopen_records"][0]["reopener"], "admin")
+                self.assertEqual(data["reopen_records"][0]["reason"], "fix issues")
+                self.assertIn("previous_signoff", data["reopen_records"][0])
+                self.assertEqual(data["reopen_records"][0]["previous_signoff"]["signer"], "manager")
+                return
+        self.fail("batch file not found")
+
+    def test_resignoff_after_reopen(self):
+        run_cli("reopen", self.tmp_dir,
+                "--reopener", "admin", "--reason", "fix")
+
+        issue_id = self._get_first_issue_id()
+        run_cli("review", self.tmp_dir, issue_id,
+                "--status", "confirmed", "--assignee", "fixer")
+
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "manager2",
+                     "--reason", "重新复核完成，所有问题已确认",
+                     "--force-with-reason")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("manager2", r.stdout)
+
+    def _get_first_issue_id(self) -> str:
+        state_dir = os.path.join(self.tmp_dir, ".audit_state")
+        for f in os.listdir(state_dir):
+            if f.startswith("batch_") and f.endswith(".json"):
+                with open(os.path.join(state_dir, f), "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                issues = data.get("issues", [])
+                if issues:
+                    return issues[0]["id"]
+        raise ValueError("no issues found")
+
+
+class TestCleanSignoff(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_clean_")
+        content = b"all good"
+        make_temp_backup(self.tmp_dir, [
+            {"name": "good1.dat", "content": content},
+            {"name": "good2.dat", "content": b"also good"},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_clean_signoff_without_force(self):
+        r = run_cli("finalize", self.tmp_dir,
+                     "--signer", "qa_lead",
+                     "--reason", "所有校验通过，无阻断问题")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("批次已签收", r.stdout)
+        self.assertIn("正常签收", r.stdout)
+        self.assertIn("qa_lead", r.stdout)
+        self.assertNotIn("强制放行", r.stdout)
+
+
+class TestCrossProcessSignoff(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_test_cross_sign_")
+        content = b"cross process signoff test"
+        wrong_hash = hashlib.sha256(b"wrong").hexdigest()
+        make_temp_backup(self.tmp_dir, [
+            {"name": "a.dat", "content": content},
+            {"name": "b.dat", "content": b"bad hash", "sha256": wrong_hash},
+        ])
+        run_cli("import", os.path.join(self.tmp_dir, "manifest.json"), self.tmp_dir)
+        run_cli("precheck", self.tmp_dir)
+        run_cli("finalize", self.tmp_dir,
+                "--signer", "signer1",
+                "--reason", "risk accepted for cross test",
+                "--force-with-reason")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_resume_shows_signoff_status(self):
+        r = run_cli("resume", self.tmp_dir)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("finalized", r.stdout)
+        self.assertIn("signer1", r.stdout)
+        self.assertIn("强制放行", r.stdout)
+
+    def test_list_shows_signoff_status(self):
+        r = run_cli("list", self.tmp_dir)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("finalized", r.stdout)
+        self.assertIn("signer1", r.stdout)
+
+    def test_export_includes_signoff_and_log(self):
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli("export", self.tmp_dir, "--output", reports_dir)
+        self.assertEqual(r.returncode, 0)
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertEqual(report["status"], "finalized")
+        self.assertIsNotNone(report["signoff"])
+        self.assertEqual(report["signoff"]["signer"], "signer1")
+        self.assertEqual(report["signoff"]["reason"], "risk accepted for cross test")
+        self.assertTrue(report["signoff"]["forced"])
+        self.assertGreater(report["signoff"]["unresolved_blocking_count"], 0)
+
+        self.assertIsInstance(report["operation_log"], list)
+        self.assertGreater(len(report["operation_log"]), 0)
+        actions = [l["action"] for l in report["operation_log"]]
+        self.assertIn("finalize", actions)
+        self.assertIn("precheck", actions)
+        self.assertIn("export", actions)
+
+        csv_path = os.path.join(reports_dir, "audit_report_TEST-001.csv")
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            csv_content = f.read()
+        self.assertIn("signer1", csv_content)
+        self.assertIn("risk accepted for cross test", csv_content)
+        self.assertIn("强制放行", csv_content)
+        self.assertIn("操作日志", csv_content)
+
+    def test_reopen_then_resume_shows_history(self):
+        run_cli("reopen", self.tmp_dir,
+                "--reopener", "ops",
+                "--reason", "cross test reopen")
+
+        r = run_cli("resume", self.tmp_dir)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("open", r.stdout)
+        self.assertIn("重开次数: 1", r.stdout)
+
+        reports_dir = os.path.join(self.tmp_dir, "reports2")
+        run_cli("export", self.tmp_dir, "--output", reports_dir)
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertEqual(len(report["reopen_records"]), 1)
+        self.assertEqual(report["reopen_records"][0]["reopener"], "ops")
+        self.assertEqual(report["reopen_records"][0]["previous_signoff"]["signer"], "signer1")
+
+
 if __name__ == "__main__":
     unittest.main()

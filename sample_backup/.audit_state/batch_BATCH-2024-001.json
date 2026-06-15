@@ -5,8 +5,8 @@
   "manifest": {
     "batch_id": "BATCH-2024-001",
     "backup_window": {
-      "start": "2026-06-15T23:13:44.587803",
-      "end": "2026-06-16T01:13:44.587803"
+      "start": "2026-06-16T01:04:45.674929",
+      "end": "2026-06-16T03:04:45.674929"
     },
     "valid_business_lines": [
       "order_system",
@@ -69,8 +69,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.458813",
-      "updated_at": "2026-06-16T02:38:09.458819",
+      "created_at": "2026-06-16T03:05:15.855740",
+      "updated_at": "2026-06-16T03:05:15.855747",
       "detail": {
         "type": "bad_checksum"
       }
@@ -84,8 +84,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.458866",
-      "updated_at": "2026-06-16T02:38:09.458867",
+      "created_at": "2026-06-16T03:05:15.855798",
+      "updated_at": "2026-06-16T03:05:15.855800",
       "detail": {
         "type": "size_mismatch"
       }
@@ -99,23 +99,23 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.459020",
-      "updated_at": "2026-06-16T02:38:09.459022",
+      "created_at": "2026-06-16T03:05:15.855968",
+      "updated_at": "2026-06-16T03:05:15.855970",
       "detail": {
         "type": "missing_file"
       }
     },
     {
-      "id": "e96f085ba160",
+      "id": "28d3b40711d7",
       "type": "outside_backup_window",
       "severity": "confirmable",
       "file_path": "data/old_file.dat",
-      "message": "File mtime 2026-06-09T01:13:44.587803 outside backup window [2026-06-15T23:13:44.587803, 2026-06-16T01:13:44.587803]",
+      "message": "File mtime 2026-06-09T03:04:45.674929 outside backup window [2026-06-16T01:04:45.674929, 2026-06-16T03:04:45.674929]",
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.459210",
-      "updated_at": "2026-06-16T02:38:09.459211",
+      "created_at": "2026-06-16T03:05:15.856130",
+      "updated_at": "2026-06-16T03:05:15.856131",
       "detail": {
         "type": "outside_window"
       }
@@ -129,8 +129,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.459528",
-      "updated_at": "2026-06-16T02:38:09.459531",
+      "created_at": "2026-06-16T03:05:15.856287",
+      "updated_at": "2026-06-16T03:05:15.856289",
       "detail": {
         "type": "unknown_business_line"
       }
@@ -144,8 +144,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:38:09.459546",
-      "updated_at": "2026-06-16T02:38:09.459548",
+      "created_at": "2026-06-16T03:05:15.856295",
+      "updated_at": "2026-06-16T03:05:15.856297",
       "detail": {
         "field": "revocation_list"
       }
@@ -161,6 +161,64 @@
     "data/unknown_bl.dat"
   ],
   "review_history": [],
-  "created_at": "2026-06-16T02:38:09.343936",
-  "updated_at": "2026-06-16T02:38:09.459870"
+  "status": "open",
+  "signoff": null,
+  "reopen_records": [
+    {
+      "reopener": "ops",
+      "reason": "发现漏处理的问题",
+      "timestamp": "2026-06-16T03:06:07.321799",
+      "previous_signoff": {
+        "signer": "manager",
+        "reason": "经风险评估，特批放行",
+        "timestamp": "2026-06-16T03:05:43.748520",
+        "forced": true,
+        "unresolved_blocking_count": 3,
+        "unresolved_confirmable_count": 3
+      }
+    }
+  ],
+  "operation_log": [
+    {
+      "action": "precheck",
+      "actor": null,
+      "reason": null,
+      "timestamp": "2026-06-16T03:05:15.856317",
+      "detail": {
+        "new_issues": 6
+      }
+    },
+    {
+      "action": "finalize",
+      "actor": "manager",
+      "reason": "经风险评估，特批放行",
+      "timestamp": "2026-06-16T03:05:43.748552",
+      "detail": {
+        "forced": true,
+        "unresolved_blocking": 3,
+        "unresolved_confirmable": 3
+      }
+    },
+    {
+      "action": "reopen",
+      "actor": "ops",
+      "reason": "发现漏处理的问题",
+      "timestamp": "2026-06-16T03:06:07.321843",
+      "detail": {
+        "reopen_count": 1
+      }
+    },
+    {
+      "action": "export",
+      "actor": null,
+      "reason": null,
+      "timestamp": "2026-06-16T03:06:20.026514",
+      "detail": {
+        "format": "all",
+        "output_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup\\reports"
+      }
+    }
+  ],
+  "created_at": "2026-06-16T03:05:04.606749",
+  "updated_at": "2026-06-16T03:06:20.041271"
 }
