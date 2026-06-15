@@ -1,0 +1,25 @@
+﻿=== 离线备份包验收报告 ===
+批次ID,BATCH-2024-001
+Manifest路径,D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup\manifest.json
+备份目录,D:\workSpace\AI__SPACE\02-label\zgw-00133\sample_backup
+创建时间,2026-06-16T02:09:17.952310
+报告时间,2026-06-16T02:09:47.364715
+
+--- 概要统计 ---
+问题总数,6
+阻断问题 (Blocking),3
+可确认问题 (Confirmable),3
+已扫描文件,7
+Manifest文件总数,7
+
+--- 阻断问题详情 (必须修复) ---
+问题ID,类型,文件路径,严重程度,状态,处理人,备注,消息,创建时间,更新时间
+02d8013c22e5,bad_checksum,data/tampered_file.dat,blocking,open,,,"SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936",2026-06-16T02:09:25.352253,2026-06-16T02:09:25.352259
+ced10514917e,size_mismatch,data/wrong_size.dat,blocking,open,,,"Size mismatch: expected 539, got 39",2026-06-16T02:09:25.352318,2026-06-16T02:09:25.352320
+79ddd6fc0c30,missing_file,data/deleted_file.dat,blocking,open,,,File not found: data/deleted_file.dat,2026-06-16T02:09:25.352504,2026-06-16T02:09:25.352506
+
+--- 可人工确认问题详情 ---
+问题ID,类型,文件路径,严重程度,状态,处理人,备注,消息,创建时间,更新时间
+e96f085ba160,outside_backup_window,data/old_file.dat,confirmable,open,,,"File mtime 2026-06-09T01:13:44.587803 outside backup window [2026-06-15T23:13:44.587803, 2026-06-16T01:13:44.587803]",2026-06-16T02:09:25.352676,2026-06-16T02:09:25.352677
+bdfd4b1829ec,unknown_business_line,data/unknown_bl.dat,confirmable,open,,,"Unknown business line 'unknown_system_xyz', valid: ['order_system', 'payment_system', 'user_system']",2026-06-16T02:09:25.352846,2026-06-16T02:09:25.352848
+1fb222aa8087,empty_revocation,<manifest>,confirmable,ignored,ops01,reviewer-note-empty-revocation,Revocation list is present but empty - please confirm this is intentional,2026-06-16T02:09:25.352854,2026-06-16T02:09:47.364502

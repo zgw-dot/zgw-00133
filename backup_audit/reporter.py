@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import csv
+import json
+import os
+from typing import Dict, List
+
+from .models import AuditBatch, Issue, IssueSeverity, IssueStatus
+
+
+def group_issues_by_severity(batch: AuditBatch) -> Dict[str, List[Issue]]:
+    grouped: Dict[str, List[Issue]] = {
+        IssueSeverity.BLOCKING.value: [],
+        IssueSeverity.CONFIRMABLE.value: [],
+    }
+    for issue in batch.issues:
+        grouped[issue.severity.value].append(issue)
+    return grouped
+
+
+def group_issues_by_status(batch: AuditBatch) -> Dict[str, List[Issue]]:
+    grouped: Dict[str, List[Issue]] = {s.value: [] for s in IssueStatus}
+    for issue in batch.issues:
+        grouped[issue.status.value].append(issue)
+    return grouped
+
+
+def export_json_report(batch: AuditBatch, output_path: str) -> str:
+    grouped_severity = group_issues_by_severity(batch)
+    grouped_status = group_issues_by_status(batch)
+
+    report = {
+        "batch_id": batch.id,
+        "manifest_path": batch.manifest_path,
+        "backup_dir": batch.backup_dir,
+        "created_at": batch.created_at,
+        "generated_at": batch.updated_at,
+        "summary": {
+            "total_issues": len(batch.issues),
+            "by_severity": {
+                k: len(v) for k, v in grouped_severity.items()
+            },
+            "by_status": {
+                k: len(v) for k, v in grouped_status.items()
+            },
+            "scanned_files": len(batch.scanned_files),
+            "manifest_files": len(batch.manifest.files),
+        },
+        "blocking_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.BLOCKING.value]],
+        "confirmable_issues": [i.to_dict() for i in grouped_severity[IssueSeverity.CONFIRMABLE.value]],
+        "all_issues": [i.to_dict() for i in batch.issues],
+    }
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return output_path
+
+
+def export_csv_report(batch: AuditBatch, output_path: str) -> str:
+    grouped = group_issues_by_severity(batch)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+
+        writer.writerow(["=== 离线备份包验收报告 ==="])
+        writer.writerow(["批次ID", batch.id])
+        writer.writerow(["Manifest路径", batch.manifest_path])
+        writer.writerow(["备份目录", batch.backup_dir])
+        writer.writerow(["创建时间", batch.created_at])
+        writer.writerow(["报告时间", batch.updated_at])
+        writer.writerow([])
+
+        writer.writerow(["--- 概要统计 ---"])
+        writer.writerow(["问题总数", len(batch.issues)])
+        writer.writerow(["阻断问题 (Blocking)", len(grouped[IssueSeverity.BLOCKING.value])])
+        writer.writerow(["可确认问题 (Confirmable)", len(grouped[IssueSeverity.CONFIRMABLE.value])])
+        writer.writerow(["已扫描文件", len(batch.scanned_files)])
+        writer.writerow(["Manifest文件总数", len(batch.manifest.files)])
+        writer.writerow([])
+
+        writer.writerow(["--- 阻断问题详情 (必须修复) ---"])
+        writer.writerow([
+            "问题ID", "类型", "文件路径", "严重程度", "状态",
+            "处理人", "备注", "消息", "创建时间", "更新时间"
+        ])
+        for issue in grouped[IssueSeverity.BLOCKING.value]:
+            writer.writerow([
+                issue.id,
+                issue.type.value,
+                issue.file_path,
+                issue.severity.value,
+                issue.status.value,
+                issue.assignee or "",
+                issue.notes or "",
+                issue.message,
+                issue.created_at,
+                issue.updated_at,
+            ])
+        writer.writerow([])
+
+        writer.writerow(["--- 可人工确认问题详情 ---"])
+        writer.writerow([
+            "问题ID", "类型", "文件路径", "严重程度", "状态",
+            "处理人", "备注", "消息", "创建时间", "更新时间"
+        ])
+        for issue in grouped[IssueSeverity.CONFIRMABLE.value]:
+            writer.writerow([
+                issue.id,
+                issue.type.value,
+                issue.file_path,
+                issue.severity.value,
+                issue.status.value,
+                issue.assignee or "",
+                issue.notes or "",
+                issue.message,
+                issue.created_at,
+                issue.updated_at,
+            ])
+
+    return output_path
+
+
+def print_summary(batch: AuditBatch) -> None:
+    grouped_severity = group_issues_by_severity(batch)
+    grouped_status = group_issues_by_status(batch)
+
+    print(f"\n批次 ID: {batch.id}")
+    print(f"备份目录: {batch.backup_dir}")
+    print(f"Manifest: {batch.manifest_path}")
+    print(f"\n=== 概要 ===")
+    print(f"  问题总数:    {len(batch.issues)}")
+    print(f"  阻断问题:    {len(grouped_severity[IssueSeverity.BLOCKING.value])} (必须修复)")
+    print(f"  可确认问题:  {len(grouped_severity[IssueSeverity.CONFIRMABLE.value])} (人工确认)")
+    print(f"\n  按状态:")
+    for status, issues in grouped_status.items():
+        if len(issues) > 0:
+            print(f"    {status}: {len(issues)}")
+    print(f"  已扫描文件:  {len(batch.scanned_files)}/{len(batch.manifest.files)}")

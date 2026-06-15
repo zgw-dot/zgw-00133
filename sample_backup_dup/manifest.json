@@ -1,0 +1,28 @@
+{
+  "batch_id": "BATCH-DUP-001",
+  "backup_window": {
+    "start": "2026-06-16T00:05:24.524573",
+    "end": "2026-06-16T02:05:24.524573"
+  },
+  "valid_business_lines": [
+    "order_system"
+  ],
+  "files": [
+    {
+      "path": "data/duplicated_file.dat",
+      "sha256": "f68c33e07828f75b6c8448b41bf1e4794a129b559662631f320ffbe02289dfcf",
+      "size": 35,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/duplicated_file.dat",
+      "sha256": "f68c33e07828f75b6c8448b41bf1e4794a129b559662631f320ffbe02289dfcf",
+      "size": 35,
+      "business_line": "order_system"
+    }
+  ],
+  "revocation_list": [
+    "cert-123",
+    "cert-456"
+  ]
+}

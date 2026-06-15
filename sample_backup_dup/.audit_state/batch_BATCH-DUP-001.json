@@ -1,0 +1,56 @@
+{
+  "id": "BATCH-DUP-001",
+  "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup_dup\\manifest.json",
+  "backup_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup_dup",
+  "manifest": {
+    "batch_id": "BATCH-DUP-001",
+    "backup_window": {
+      "start": "2026-06-16T00:05:24.524573",
+      "end": "2026-06-16T02:05:24.524573"
+    },
+    "valid_business_lines": [
+      "order_system"
+    ],
+    "files": [
+      {
+        "path": "data/duplicated_file.dat",
+        "sha256": "f68c33e07828f75b6c8448b41bf1e4794a129b559662631f320ffbe02289dfcf",
+        "size": 35,
+        "business_line": "order_system"
+      },
+      {
+        "path": "data/duplicated_file.dat",
+        "sha256": "f68c33e07828f75b6c8448b41bf1e4794a129b559662631f320ffbe02289dfcf",
+        "size": 35,
+        "business_line": "order_system"
+      }
+    ],
+    "revocation_list": [
+      "cert-123",
+      "cert-456"
+    ]
+  },
+  "issues": [
+    {
+      "id": "bdaeeaa4b593",
+      "type": "duplicate_scan",
+      "severity": "blocking",
+      "file_path": "data/duplicated_file.dat",
+      "message": "Duplicate manifest entry: data/duplicated_file.dat appears 2 times",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:10:42.271768",
+      "updated_at": "2026-06-16T02:10:42.271797",
+      "detail": {
+        "type": "duplicate_entry",
+        "count": 2
+      }
+    }
+  ],
+  "scanned_files": [
+    "data/duplicated_file.dat"
+  ],
+  "created_at": "2026-06-16T02:10:15.169099",
+  "updated_at": "2026-06-16T02:10:42.272529"
+}

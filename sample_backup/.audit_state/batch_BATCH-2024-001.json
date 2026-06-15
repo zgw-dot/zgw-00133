@@ -1,0 +1,165 @@
+{
+  "id": "BATCH-2024-001",
+  "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup\\manifest.json",
+  "backup_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00133\\sample_backup",
+  "manifest": {
+    "batch_id": "BATCH-2024-001",
+    "backup_window": {
+      "start": "2026-06-15T23:13:44.587803",
+      "end": "2026-06-16T01:13:44.587803"
+    },
+    "valid_business_lines": [
+      "order_system",
+      "payment_system",
+      "user_system"
+    ],
+    "files": [
+      {
+        "path": "data/normal_file.dat",
+        "sha256": "de1dbd486ccd7367979394b0d9af079fbebfded147af9a35122fa303750f11e5",
+        "size": 49,
+        "business_line": "order_system"
+      },
+      {
+        "path": "data/payments_2024.dat",
+        "sha256": "0c363bb15d018e2a1cd87a014d69f4733787a43c2d5a7ef7d73a3902f0a5e306",
+        "size": 39,
+        "business_line": "payment_system"
+      },
+      {
+        "path": "data/tampered_file.dat",
+        "sha256": "abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff",
+        "size": 41,
+        "business_line": "order_system"
+      },
+      {
+        "path": "data/wrong_size.dat",
+        "sha256": "7c25f27099ccd7bd550aa1236a461e40f9917bd400e74a501d8aefd620aa9185",
+        "size": 539,
+        "business_line": "user_system"
+      },
+      {
+        "path": "data/deleted_file.dat",
+        "sha256": "ac575fd2a0d68238774c3583dca142a64535096497c9510c95a9e25d4c861f3c",
+        "size": 1024,
+        "business_line": "order_system"
+      },
+      {
+        "path": "data/old_file.dat",
+        "sha256": "06727215f2747259ced04f43677aee6531e23c835bd6009691cf8fe78c097210",
+        "size": 48,
+        "business_line": "payment_system"
+      },
+      {
+        "path": "data/unknown_bl.dat",
+        "sha256": "6f2af3533761cf0f1f200a0857be8911cdccdb563e28c14c620a7f45628b9e42",
+        "size": 31,
+        "business_line": "unknown_system_xyz"
+      }
+    ],
+    "revocation_list": []
+  },
+  "issues": [
+    {
+      "id": "02d8013c22e5",
+      "type": "bad_checksum",
+      "severity": "blocking",
+      "file_path": "data/tampered_file.dat",
+      "message": "SHA256 mismatch: expected abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff, got 4c9f7c2d97d8f3c955389cefc69843fc0e215d2971c92571e6a609be0ae4a936",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:09:25.352253",
+      "updated_at": "2026-06-16T02:09:25.352259",
+      "detail": {
+        "type": "bad_checksum"
+      }
+    },
+    {
+      "id": "ced10514917e",
+      "type": "size_mismatch",
+      "severity": "blocking",
+      "file_path": "data/wrong_size.dat",
+      "message": "Size mismatch: expected 539, got 39",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:09:25.352318",
+      "updated_at": "2026-06-16T02:09:25.352320",
+      "detail": {
+        "type": "size_mismatch"
+      }
+    },
+    {
+      "id": "79ddd6fc0c30",
+      "type": "missing_file",
+      "severity": "blocking",
+      "file_path": "data/deleted_file.dat",
+      "message": "File not found: data/deleted_file.dat",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:09:25.352504",
+      "updated_at": "2026-06-16T02:09:25.352506",
+      "detail": {
+        "type": "missing_file"
+      }
+    },
+    {
+      "id": "e96f085ba160",
+      "type": "outside_backup_window",
+      "severity": "confirmable",
+      "file_path": "data/old_file.dat",
+      "message": "File mtime 2026-06-09T01:13:44.587803 outside backup window [2026-06-15T23:13:44.587803, 2026-06-16T01:13:44.587803]",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:09:25.352676",
+      "updated_at": "2026-06-16T02:09:25.352677",
+      "detail": {
+        "type": "outside_window"
+      }
+    },
+    {
+      "id": "bdfd4b1829ec",
+      "type": "unknown_business_line",
+      "severity": "confirmable",
+      "file_path": "data/unknown_bl.dat",
+      "message": "Unknown business line 'unknown_system_xyz', valid: ['order_system', 'payment_system', 'user_system']",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:09:25.352846",
+      "updated_at": "2026-06-16T02:09:25.352848",
+      "detail": {
+        "type": "unknown_business_line"
+      }
+    },
+    {
+      "id": "1fb222aa8087",
+      "type": "empty_revocation",
+      "severity": "confirmable",
+      "file_path": "<manifest>",
+      "message": "Revocation list is present but empty - please confirm this is intentional",
+      "status": "ignored",
+      "assignee": "ops01",
+      "notes": "reviewer-note-empty-revocation",
+      "created_at": "2026-06-16T02:09:25.352854",
+      "updated_at": "2026-06-16T02:09:47.364502",
+      "detail": {
+        "field": "revocation_list"
+      }
+    }
+  ],
+  "scanned_files": [
+    "data/normal_file.dat",
+    "data/payments_2024.dat",
+    "data/tampered_file.dat",
+    "data/wrong_size.dat",
+    "data/deleted_file.dat",
+    "data/old_file.dat",
+    "data/unknown_bl.dat"
+  ],
+  "created_at": "2026-06-16T02:09:17.952310",
+  "updated_at": "2026-06-16T02:09:47.364715"
+}

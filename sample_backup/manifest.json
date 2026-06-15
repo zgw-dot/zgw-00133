@@ -1,0 +1,57 @@
+{
+  "batch_id": "BATCH-2024-001",
+  "backup_window": {
+    "start": "2026-06-15T23:13:44.587803",
+    "end": "2026-06-16T01:13:44.587803"
+  },
+  "valid_business_lines": [
+    "order_system",
+    "payment_system",
+    "user_system"
+  ],
+  "files": [
+    {
+      "path": "data/normal_file.dat",
+      "sha256": "de1dbd486ccd7367979394b0d9af079fbebfded147af9a35122fa303750f11e5",
+      "size": 49,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/payments_2024.dat",
+      "sha256": "0c363bb15d018e2a1cd87a014d69f4733787a43c2d5a7ef7d73a3902f0a5e306",
+      "size": 39,
+      "business_line": "payment_system"
+    },
+    {
+      "path": "data/tampered_file.dat",
+      "sha256": "abf8da742404506cb0eaefb4489dd264f50598bc739860fc551227de8def56ff",
+      "size": 41,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/wrong_size.dat",
+      "sha256": "7c25f27099ccd7bd550aa1236a461e40f9917bd400e74a501d8aefd620aa9185",
+      "size": 539,
+      "business_line": "user_system"
+    },
+    {
+      "path": "data/deleted_file.dat",
+      "sha256": "ac575fd2a0d68238774c3583dca142a64535096497c9510c95a9e25d4c861f3c",
+      "size": 1024,
+      "business_line": "order_system"
+    },
+    {
+      "path": "data/old_file.dat",
+      "sha256": "06727215f2747259ced04f43677aee6531e23c835bd6009691cf8fe78c097210",
+      "size": 48,
+      "business_line": "payment_system"
+    },
+    {
+      "path": "data/unknown_bl.dat",
+      "sha256": "6f2af3533761cf0f1f200a0857be8911cdccdb563e28c14c620a7f45628b9e42",
+      "size": 31,
+      "business_line": "unknown_system_xyz"
+    }
+  ],
+  "revocation_list": []
+}

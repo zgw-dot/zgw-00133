@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import List, Tuple
+
+from .models import (
+    AuditBatch,
+    Issue,
+    IssueSeverity,
+    IssueType,
+    Manifest,
+    ManifestFile,
+)
+
+
+def load_manifest(manifest_path: str) -> Manifest:
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return Manifest.from_dict(data)
+
+
+def sha256_file(file_path: str, chunk_size: int = 8192) -> str:
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def validate_file_path(
+    backup_dir: str, manifest_file: ManifestFile
+) -> Tuple[bool, str]:
+    full_path = os.path.join(backup_dir, manifest_file.path)
+    if not os.path.isabs(manifest_file.path):
+        return True, ""
+    return False, f"Path must be relative, got absolute: {manifest_file.path}"
+
+
+def check_file_exists(backup_dir: str, manifest_file: ManifestFile) -> Tuple[bool, str]:
+    full_path = os.path.join(backup_dir, manifest_file.path)
+    if not os.path.exists(full_path):
+        return False, f"File not found: {manifest_file.path}"
+    if not os.path.isfile(full_path):
+        return False, f"Not a regular file: {manifest_file.path}"
+    return True, ""
+
+
+def check_file_size(backup_dir: str, manifest_file: ManifestFile) -> Tuple[bool, str]:
+    full_path = os.path.join(backup_dir, manifest_file.path)
+    actual_size = os.path.getsize(full_path)
+    if actual_size != manifest_file.size:
+        return False, f"Size mismatch: expected {manifest_file.size}, got {actual_size}"
+    return True, ""
+
+
+def check_sha256(backup_dir: str, manifest_file: ManifestFile) -> Tuple[bool, str]:
+    full_path = os.path.join(backup_dir, manifest_file.path)
+    actual_hash = sha256_file(full_path)
+    if actual_hash.lower() != manifest_file.sha256.lower():
+        return False, f"SHA256 mismatch: expected {manifest_file.sha256}, got {actual_hash}"
+    return True, ""
+
+
+def check_backup_window(
+    backup_dir: str, manifest_file: ManifestFile, window_start: str, window_end: str
+) -> Tuple[bool, str]:
+    full_path = os.path.join(backup_dir, manifest_file.path)
+    try:
+        mtime = datetime.fromtimestamp(os.path.getmtime(full_path))
+        start = datetime.fromisoformat(window_start)
+        end = datetime.fromisoformat(window_end)
+        if mtime < start or mtime > end:
+            return False, (
+                f"File mtime {mtime.isoformat()} outside backup window "
+                f"[{window_start}, {window_end}]"
+            )
+        return True, ""
+    except (ValueError, OSError) as e:
+        return False, f"Failed to check backup window: {e}"
+
+
+def check_business_line(
+    manifest_file: ManifestFile, valid_lines: List[str]
+) -> Tuple[bool, str]:
+    if not manifest_file.business_line:
+        return True, ""
+    if manifest_file.business_line not in valid_lines:
+        return False, (
+            f"Unknown business line '{manifest_file.business_line}', "
+            f"valid: {valid_lines}"
+        )
+    return True, ""
+
+
+def check_duplicate_entries(manifest_files: List[ManifestFile]) -> List[Issue]:
+    issues: List[Issue] = []
+    seen: Dict[str, int] = {}
+    for mf in manifest_files:
+        seen[mf.path] = seen.get(mf.path, 0) + 1
+    for path, count in seen.items():
+        if count > 1:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.DUPLICATE_SCAN,
+                    severity=IssueSeverity.BLOCKING,
+                    file_path=path,
+                    message=f"Duplicate manifest entry: {path} appears {count} times",
+                    detail={"type": "duplicate_entry", "count": count},
+                )
+            )
+    return issues
+
+
+def check_empty_revocation(manifest: Manifest) -> List[Issue]:
+    issues: List[Issue] = []
+    revocation_list = manifest.revocation_list
+    if revocation_list is not None and len(revocation_list) == 0:
+        issues.append(
+            Issue.create(
+                issue_type=IssueType.EMPTY_REVOCATION,
+                severity=IssueSeverity.CONFIRMABLE,
+                file_path="<manifest>",
+                message="Revocation list is present but empty - please confirm this is intentional",
+                detail={"field": "revocation_list"},
+            )
+        )
+    return issues
+
+
+def run_precheck(batch: AuditBatch) -> List[Issue]:
+    issues: List[Issue] = []
+    manifest = batch.manifest
+    backup_dir = batch.backup_dir
+
+    dup_issues = check_duplicate_entries(manifest.files)
+    issues.extend(dup_issues)
+
+    for mf in manifest.files:
+        if mf.path in batch.scanned_files:
+            continue
+
+        ok, msg = validate_file_path(backup_dir, mf)
+        if not ok:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.INVALID_PATH,
+                    severity=IssueSeverity.BLOCKING,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "invalid_path"},
+                )
+            )
+            continue
+
+        exists, msg = check_file_exists(backup_dir, mf)
+        if not exists:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.MISSING_FILE,
+                    severity=IssueSeverity.BLOCKING,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "missing_file"},
+                )
+            )
+            batch.scanned_files.append(mf.path)
+            continue
+
+        size_ok, msg = check_file_size(backup_dir, mf)
+        if not size_ok:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.SIZE_MISMATCH,
+                    severity=IssueSeverity.BLOCKING,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "size_mismatch"},
+                )
+            )
+
+        hash_ok, msg = check_sha256(backup_dir, mf)
+        if not hash_ok:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.BAD_CHECKSUM,
+                    severity=IssueSeverity.BLOCKING,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "bad_checksum"},
+                )
+            )
+
+        window_ok, msg = check_backup_window(
+            backup_dir, mf, manifest.backup_window.start, manifest.backup_window.end
+        )
+        if not window_ok:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.OUTSIDE_WINDOW,
+                    severity=IssueSeverity.CONFIRMABLE,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "outside_window"},
+                )
+            )
+
+        bl_ok, msg = check_business_line(mf, manifest.valid_business_lines)
+        if not bl_ok:
+            issues.append(
+                Issue.create(
+                    issue_type=IssueType.UNKNOWN_BUSINESS_LINE,
+                    severity=IssueSeverity.CONFIRMABLE,
+                    file_path=mf.path,
+                    message=msg,
+                    detail={"type": "unknown_business_line"},
+                )
+            )
+
+        batch.scanned_files.append(mf.path)
+
+    issues.extend(check_empty_revocation(manifest))
+
+    new_issues: List[Issue] = []
+    for issue in issues:
+        if batch.add_issue(issue):
+            new_issues.append(issue)
+
+    return new_issues
