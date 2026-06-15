@@ -13,7 +13,7 @@ from .reporter import (
     group_issues_by_severity,
     print_summary,
 )
-from .validator import load_manifest, run_precheck
+from .validator import load_manifest, run_precheck, ManifestValidationError
 
 
 STORAGE_DIR_NAME = ".audit_state"
@@ -66,7 +66,12 @@ def cmd_import(args: argparse.Namespace) -> int:
         print(f"警告: 备份目录已有批次 {existing.id}，使用 --force 重新导入，或使用 resume 继续")
         return 2
 
-    manifest = load_manifest(manifest_path)
+    try:
+        manifest = load_manifest(manifest_path)
+    except ManifestValidationError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        print(f"\n发现 {len(e.errors)} 个格式错误，批次未创建。请修正 manifest 后重新导入。", file=sys.stderr)
+        return 1
     batch = AuditBatch(
         id=manifest.batch_id,
         manifest_path=manifest_path,
@@ -163,6 +168,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     }
     status = status_map.get(args.status)
 
+    batch.push_review_snapshot(args.issue_id)
     issue.update(
         status=status,
         assignee=args.assignee,
@@ -219,6 +225,52 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_undo(args: argparse.Namespace) -> int:
+    backup_dir = os.path.abspath(args.backup_dir)
+    batch = load_batch(backup_dir, args.batch_id)
+
+    if not batch:
+        print("错误: 未找到批次", file=sys.stderr)
+        return 1
+
+    snapshot = batch.pop_review_snapshot()
+    if snapshot is None:
+        print("没有可撤销的复核操作（撤销历史为空）。", file=sys.stderr)
+        return 1
+
+    issue_id = snapshot["issue_id"]
+    issue = batch.get_issue(issue_id)
+    if issue is None:
+        print(f"错误: 撤销快照对应的问题 {issue_id} 不存在", file=sys.stderr)
+        batch.review_history.append(snapshot)
+        return 1
+
+    prev_status = IssueStatus(snapshot["status"])
+    prev_assignee = snapshot.get("assignee")
+    prev_notes = snapshot.get("notes")
+    prev_updated_at = snapshot.get("updated_at")
+
+    issue.status = prev_status
+    issue.assignee = prev_assignee
+    issue.notes = prev_notes
+    issue.updated_at = prev_updated_at or issue.updated_at
+
+    save_batch(batch, backup_dir)
+
+    print(f"已撤销上一条复核: 问题 {issue_id}")
+    print(f"  状态: {prev_status.value}")
+    if prev_assignee:
+        print(f"  处理人: {prev_assignee}")
+    else:
+        print(f"  处理人: (无)")
+    if prev_notes:
+        print(f"  备注: {prev_notes}")
+    else:
+        print(f"  备注: (无)")
+    print(f"  剩余可撤销次数: {len(batch.review_history)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backup-audit",
@@ -269,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume.add_argument("backup_dir", help="备份包目录")
     p_resume.add_argument("--batch-id", help="指定批次 ID")
     p_resume.set_defaults(func=cmd_resume)
+
+    p_undo = subparsers.add_parser("undo", help="撤销上一条复核操作")
+    p_undo.add_argument("backup_dir", help="备份包目录")
+    p_undo.add_argument("--batch-id", help="指定批次 ID")
+    p_undo.set_defaults(func=cmd_undo)
 
     return parser
 

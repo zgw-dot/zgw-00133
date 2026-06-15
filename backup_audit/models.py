@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import uuid
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -176,6 +177,7 @@ class AuditBatch:
     manifest: Manifest
     issues: List[Issue] = field(default_factory=list)
     scanned_files: List[str] = field(default_factory=list)
+    review_history: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     storage_path: Optional[str] = None
@@ -188,6 +190,7 @@ class AuditBatch:
             "manifest": self.manifest.to_dict(),
             "issues": [i.to_dict() for i in self.issues],
             "scanned_files": self.scanned_files,
+            "review_history": self.review_history,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -201,6 +204,7 @@ class AuditBatch:
             manifest=Manifest.from_dict(data["manifest"]),
             issues=[Issue.from_dict(i) for i in data.get("issues", [])],
             scanned_files=data.get("scanned_files", []),
+            review_history=data.get("review_history", []),
             created_at=data["created_at"],
             updated_at=data["updated_at"],
         )
@@ -247,3 +251,22 @@ class AuditBatch:
         for issue in self.issues:
             result[issue.status.value] += 1
         return result
+
+    def push_review_snapshot(self, issue_id: str) -> None:
+        issue = self.get_issue(issue_id)
+        if issue is None:
+            return
+        snapshot = {
+            "issue_id": issue.id,
+            "status": issue.status.value,
+            "assignee": issue.assignee,
+            "notes": issue.notes,
+            "updated_at": issue.updated_at,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self.review_history.append(snapshot)
+
+    def pop_review_snapshot(self) -> Optional[Dict[str, Any]]:
+        if not self.review_history:
+            return None
+        return self.review_history.pop()

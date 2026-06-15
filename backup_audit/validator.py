@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -16,10 +17,62 @@ from .models import (
     ManifestFile,
 )
 
+_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+class ManifestValidationError(Exception):
+    def __init__(self, errors: List[dict]) -> None:
+        self.errors = errors
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        lines = ["Manifest 格式校验失败:"]
+        for e in self.errors:
+            lines.append(f"  files[{e['index']}].{e['field']} ({e['path']}): {e['message']}")
+        return "\n".join(lines)
+
+
+def validate_manifest_format(data: dict) -> List[dict]:
+    errors: List[dict] = []
+    files = data.get("files", [])
+    for i, entry in enumerate(files):
+        path = entry.get("path", f"<unknown-{i}>")
+        sha = entry.get("sha256", "")
+        if not isinstance(sha, str) or not _SHA256_PATTERN.match(sha):
+            errors.append({
+                "index": i,
+                "field": "sha256",
+                "path": path,
+                "value": repr(sha),
+                "message": f"sha256 必须为 64 位十六进制字符串，当前值: {repr(sha)}",
+            })
+        size = entry.get("size")
+        if not isinstance(size, int) or size < 0:
+            errors.append({
+                "index": i,
+                "field": "size",
+                "path": path,
+                "value": repr(size),
+                "message": f"size 必须为非负整数，当前值: {repr(size)}",
+            })
+        p = entry.get("path", "")
+        if not isinstance(p, str) or not p.strip():
+            errors.append({
+                "index": i,
+                "field": "path",
+                "path": p or f"<unknown-{i}>",
+                "value": repr(p),
+                "message": "path 不能为空",
+            })
+    return errors
+
 
 def load_manifest(manifest_path: str) -> Manifest:
     with open(manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    format_errors = validate_manifest_format(data)
+    if format_errors:
+        raise ManifestValidationError(format_errors)
     return Manifest.from_dict(data)
 
 

@@ -26,6 +26,14 @@ coverage/
 tmp/
 temp/
 
+# Audit CLI runtime state
+.audit_state/
+
+# Generated sample data
+sample_backup/
+sample_backup_dup/
+sample_bad_manifest/
+
 # OS / editor
 .DS_Store
 Thumbs.db

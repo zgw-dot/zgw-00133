@@ -69,8 +69,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:09:25.352253",
-      "updated_at": "2026-06-16T02:09:25.352259",
+      "created_at": "2026-06-16T02:38:09.458813",
+      "updated_at": "2026-06-16T02:38:09.458819",
       "detail": {
         "type": "bad_checksum"
       }
@@ -84,8 +84,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:09:25.352318",
-      "updated_at": "2026-06-16T02:09:25.352320",
+      "created_at": "2026-06-16T02:38:09.458866",
+      "updated_at": "2026-06-16T02:38:09.458867",
       "detail": {
         "type": "size_mismatch"
       }
@@ -99,8 +99,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:09:25.352504",
-      "updated_at": "2026-06-16T02:09:25.352506",
+      "created_at": "2026-06-16T02:38:09.459020",
+      "updated_at": "2026-06-16T02:38:09.459022",
       "detail": {
         "type": "missing_file"
       }
@@ -114,8 +114,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:09:25.352676",
-      "updated_at": "2026-06-16T02:09:25.352677",
+      "created_at": "2026-06-16T02:38:09.459210",
+      "updated_at": "2026-06-16T02:38:09.459211",
       "detail": {
         "type": "outside_window"
       }
@@ -129,8 +129,8 @@
       "status": "open",
       "assignee": null,
       "notes": null,
-      "created_at": "2026-06-16T02:09:25.352846",
-      "updated_at": "2026-06-16T02:09:25.352848",
+      "created_at": "2026-06-16T02:38:09.459528",
+      "updated_at": "2026-06-16T02:38:09.459531",
       "detail": {
         "type": "unknown_business_line"
       }
@@ -141,11 +141,11 @@
       "severity": "confirmable",
       "file_path": "<manifest>",
       "message": "Revocation list is present but empty - please confirm this is intentional",
-      "status": "ignored",
-      "assignee": "ops01",
-      "notes": "reviewer-note-empty-revocation",
-      "created_at": "2026-06-16T02:09:25.352854",
-      "updated_at": "2026-06-16T02:09:47.364502",
+      "status": "open",
+      "assignee": null,
+      "notes": null,
+      "created_at": "2026-06-16T02:38:09.459546",
+      "updated_at": "2026-06-16T02:38:09.459548",
       "detail": {
         "field": "revocation_list"
       }
@@ -160,6 +160,7 @@
     "data/old_file.dat",
     "data/unknown_bl.dat"
   ],
-  "created_at": "2026-06-16T02:09:17.952310",
-  "updated_at": "2026-06-16T02:09:47.364715"
+  "review_history": [],
+  "created_at": "2026-06-16T02:38:09.343936",
+  "updated_at": "2026-06-16T02:38:09.459870"
 }
