@@ -32,6 +32,12 @@ from .waiver import (
     WaiverValidationError,
     get_global_config_dir,
 )
+from .snapshot import (
+    SnapshotStore,
+    SnapshotRecord,
+    OperationSnapshot,
+    build_config_summary,
+)
 
 
 STORAGE_DIR_NAME = ".audit_state"
@@ -94,6 +100,42 @@ def analyze_affected_batches(
 
 def get_storage_dir(backup_dir: str) -> str:
     return os.path.join(backup_dir, STORAGE_DIR_NAME)
+
+
+def _record_to_snapshot(
+    snapshot_name: Optional[str],
+    command: str,
+    success: bool,
+    output_summary: str,
+    transaction_id: Optional[str] = None,
+    affected_batches: Optional[List[Dict[str, object]]] = None,
+    store: Optional[WaiverStore] = None,
+) -> None:
+    if not snapshot_name:
+        return
+    try:
+        snap_store = SnapshotStore()
+        config_summary = build_config_summary(store) if store else None
+        record = SnapshotRecord(
+            command=command,
+            timestamp=datetime.now().isoformat(),
+            success=success,
+            output_summary=output_summary,
+            transaction_id=transaction_id,
+            affected_batches=affected_batches or [],
+            config_summary=config_summary,
+        )
+        existing = snap_store.load(snapshot_name)
+        if existing is None:
+            snap_store.create(snapshot_name, record)
+        else:
+            if not success:
+                gap_warnings = snap_store.validate_failed_records(snapshot_name)
+                if not transaction_id and not output_summary.strip():
+                    record.gap_warning = "失败命令缺少事务ID和输出摘要，无法核对结果。"
+            snap_store.append(snapshot_name, record)
+    except Exception as e:
+        safe_print(f"  [WARN] 快照记录失败: {e}", file=sys.stderr)
 
 
 def find_batch_file(storage_dir: str, batch_id: Optional[str] = None) -> Optional[str]:
@@ -851,12 +893,14 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
     store = WaiverStore()
     input_path = os.path.abspath(args.input)
     backup_dir = getattr(args, "backup_dir", None)
+    snapshot_name = getattr(args, "snapshot", None)
 
     if getattr(args, "dry_run", False):
         try:
             precheck = store.precheck_import(input_path, mode=args.mode)
         except Exception as e:
             safe_print(f"错误: 预演失败 - {e}", file=sys.stderr)
+            _record_to_snapshot(snapshot_name, "waiver import --dry-run", False, str(e), store=store)
             return 20
 
         affected_batches: Optional[List[Dict[str, object]]] = None
@@ -871,6 +915,12 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
                 pass
 
         _print_precheck_result(precheck, affected_batches)
+
+        summary_parts = [f"新增:{len(precheck.new_rules)}", f"冲突:{len(precheck.conflicting_rules)}",
+                         f"已存在:{len(precheck.existing_rules)}", f"过期:{len(precheck.expired_rules)}"]
+        _record_to_snapshot(snapshot_name, "waiver import --dry-run", precheck.can_commit,
+                            "; ".join(summary_parts),
+                            affected_batches=affected_batches, store=store)
         return 0 if precheck.can_commit else 21
 
     try:
@@ -897,16 +947,20 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
         )
     except WaiverValidationError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
         return 16
     except WaiverTransactionError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
         return 22
     except (json.JSONDecodeError, KeyError) as e:
         safe_print(f"错误: 导入文件格式无效 - {e}", file=sys.stderr)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
         return 17
 
+    tx_id = result.get("transaction_id")
     safe_print(f"豁免规则导入完成 (模式: {args.mode})")
-    safe_print(f"  事务ID: {result.get('transaction_id', 'N/A')}")
+    safe_print(f"  事务ID: {tx_id or 'N/A'}")
     safe_print(f"  操作人: {args.actor}")
     safe_print(f"  文件中规则数: {result['total_imported']}")
     safe_print(f"  成功添加: {len(result['added'])}")
@@ -921,13 +975,18 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
         safe_print(f"  跳过 (冲突/风险): {len(result['conflicts'])}")
         for rid in result["conflicts"]:
             safe_print(f"    ! {rid}")
-    if result.get("affected_batches"):
-        safe_print(f"  波及批次: {len(result['affected_batches'])}")
-        for ab in result["affected_batches"]:
+    actual_affected = result.get("affected_batches") or affected_batches
+    if actual_affected:
+        safe_print(f"  波及批次: {len(actual_affected)}")
+        for ab in actual_affected:
             safe_print(f"    * 批次 {ab['batch_id']}: 影响 {ab['affected_count']} 个问题")
     safe_print()
     safe_print("提示: 如需回滚此次导入，请执行:")
     safe_print(f"  python backup_audit_cli.py waiver rollback --actor {args.actor} --yes")
+
+    summary = f"模式:{args.mode}; 添加:{len(result['added'])}; 跳过:{len(result['skipped'])}; 冲突:{len(result['conflicts'])}"
+    _record_to_snapshot(snapshot_name, "waiver import", True, summary,
+                        transaction_id=tx_id, affected_batches=actual_affected, store=store)
     return 0
 
 
@@ -935,9 +994,11 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
     store = WaiverStore()
     last_tx = store.get_last_committed_transaction()
     backup_dir = getattr(args, "backup_dir", None)
+    snapshot_name = getattr(args, "snapshot", None)
 
     if not last_tx:
         safe_print("错误: 没有可回滚的导入事务。", file=sys.stderr)
+        _record_to_snapshot(snapshot_name, "waiver rollback", False, "没有可回滚的导入事务", store=store)
         return 23
 
     safe_print(f"即将回滚最近一次导入事务:")
@@ -966,6 +1027,8 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
         result = store.rollback_last_import(args.actor)
     except WaiverTransactionError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
+        _record_to_snapshot(snapshot_name, "waiver rollback", False, str(e),
+                            transaction_id=last_tx.id, store=store)
         return 25
 
     safe_print(f"回滚完成:")
@@ -977,6 +1040,7 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
         safe_print(f"  已移除规则:")
         for rid in result["removed_ids"]:
             safe_print(f"    - {rid}")
+    post_affected: Optional[List[Dict[str, object]]] = None
     if backup_dir and result["removed_ids"]:
         try:
             current_batches = analyze_affected_batches(backup_dir, store)
@@ -984,10 +1048,99 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
                 safe_print(f"  回滚后仍受影响批次: {len(current_batches)}")
                 for ab in current_batches:
                     safe_print(f"    * 批次 {ab['batch_id']}: {ab['affected_count']} 个问题")
+                post_affected = current_batches
             else:
                 safe_print(f"  回滚后无批次受豁免规则影响")
         except Exception:
             pass
+
+    rb_summary = f"移除:{result['removed_count']}; 保留手工:{result['manual_rules_preserved']}"
+    _record_to_snapshot(snapshot_name, "waiver rollback", True, rb_summary,
+                        transaction_id=result["transaction_id"],
+                        affected_batches=post_affected, store=store)
+    return 0
+
+
+def cmd_snapshot_list(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    snapshots = snap_store.list_snapshots()
+    if not snapshots:
+        safe_print("暂无操作快照。")
+        return 0
+    safe_print(f"=== 操作快照列表 ({len(snapshots)} 个) ===")
+    for s in snapshots:
+        safe_print(f"  * {s['name']}  记录:{s['record_count']}  创建:{s['created_at']}  更新:{s['updated_at']}")
+    return 0
+
+
+def cmd_snapshot_show(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    snapshot = snap_store.load(args.name)
+    if snapshot is None:
+        safe_print(f"错误: 快照 '{args.name}' 不存在。", file=sys.stderr)
+        return 30
+
+    safe_print(f"=== 操作快照: {snapshot.name} ===")
+    safe_print(f"  创建时间: {snapshot.created_at}")
+    safe_print(f"  最后更新: {snapshot.updated_at}")
+    safe_print(f"  记录条数: {len(snapshot.records)}")
+    safe_print()
+
+    for i, rec in enumerate(snapshot.records, 1):
+        status = "[OK]" if rec.success else "[FAIL]"
+        safe_print(f"  {i}. {status} {rec.command}")
+        safe_print(f"     时间: {rec.timestamp}")
+        if rec.transaction_id:
+            safe_print(f"     事务ID: {rec.transaction_id}")
+        safe_print(f"     摘要: {rec.output_summary}")
+        if rec.affected_batches:
+            safe_print(f"     受影响批次: {len(rec.affected_batches)}")
+            for ab in rec.affected_batches:
+                safe_print(f"       * {ab['batch_id']}: {ab['affected_count']} 个问题")
+        if rec.config_summary:
+            parts = [f"{k}={v}" for k, v in rec.config_summary.items()]
+            safe_print(f"     配置: {', '.join(parts)}")
+        if rec.gap_warning:
+            safe_print(f"     [WARN] {rec.gap_warning}")
+        safe_print()
+
+    if getattr(args, "validate", False):
+        store = WaiverStore()
+        tx_warnings = snap_store.validate_transactions(args.name, store)
+        fail_warnings = snap_store.validate_failed_records(args.name)
+        all_warnings = tx_warnings + fail_warnings
+        if all_warnings:
+            safe_print("=== 校验警告 ===")
+            for w in all_warnings:
+                safe_print(f"  [WARN] {w}")
+        else:
+            safe_print("  [OK] 校验通过，快照记录与当前状态一致。")
+    return 0
+
+
+def cmd_snapshot_export(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    try:
+        if args.format == "markdown":
+            content = snap_store.export_markdown(args.name)
+        else:
+            snapshot = snap_store.load(args.name)
+            if snapshot is None:
+                safe_print(f"错误: 快照 '{args.name}' 不存在。", file=sys.stderr)
+                return 30
+            content = json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2)
+    except ValueError as e:
+        safe_print(f"错误: {e}", file=sys.stderr)
+        return 30
+
+    if args.output:
+        output_path = os.path.abspath(args.output)
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        safe_print(f"快照已导出: {output_path}")
+    else:
+        safe_print(content)
     return 0
 
 
@@ -1195,6 +1348,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="备份包目录，用于分析下次 precheck/rescan 受影响的批次",
     )
+    p_waiver_import.add_argument(
+        "--snapshot",
+        default=None,
+        help="操作快照名称，自动记录本次命令的关键输出、事务ID、受影响批次到快照",
+    )
     p_waiver_import.set_defaults(func=cmd_waiver_import)
 
     p_waiver_rollback = waiver_sub.add_parser(
@@ -1207,6 +1365,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--backup-dir",
         default=None,
         help="备份包目录，用于分析回滚后受影响的批次",
+    )
+    p_waiver_rollback.add_argument(
+        "--snapshot",
+        default=None,
+        help="操作快照名称，自动记录本次命令的关键输出、事务ID、受影响批次到快照",
     )
     p_waiver_rollback.set_defaults(func=cmd_waiver_rollback)
 
@@ -1228,6 +1391,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_waiver_rescan.add_argument("--batch-id", help="指定批次 ID")
     p_waiver_rescan.set_defaults(func=cmd_waiver_rescan)
 
+    p_waiver_snapshot = waiver_sub.add_parser("snapshot", help="操作快照管理（记录和查看命令操作历史）")
+    snapshot_sub = p_waiver_snapshot.add_subparsers(dest="snapshot_command", help="快照子命令")
+
+    p_snap_list = snapshot_sub.add_parser("list", help="列出所有操作快照")
+    p_snap_list.set_defaults(func=cmd_snapshot_list)
+
+    p_snap_show = snapshot_sub.add_parser("show", help="查看快照详情")
+    p_snap_show.add_argument("name", help="快照名称")
+    p_snap_show.add_argument("--validate", action="store_true", help="校验快照中的事务是否仍有效")
+    p_snap_show.set_defaults(func=cmd_snapshot_show)
+
+    p_snap_export = snapshot_sub.add_parser("export", help="导出快照为 Markdown 或 JSON 文件")
+    p_snap_export.add_argument("name", help="快照名称")
+    p_snap_export.add_argument("--format", choices=["markdown", "json"], default="markdown", help="导出格式 (默认: markdown)")
+    p_snap_export.add_argument("--output", default=None, help="输出文件路径 (默认输出到终端)")
+    p_snap_export.set_defaults(func=cmd_snapshot_export)
+
     return parser
 
 
@@ -1239,6 +1419,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     if args.command == "waiver" and not getattr(args, "waiver_command", None):
         parser._subparsers._group_actions[0].choices["waiver"].print_help()
+        return 1
+    if getattr(args, "waiver_command", None) == "snapshot" and not getattr(args, "snapshot_command", None):
+        parser._subparsers._group_actions[0].choices["waiver"]._subparsers._group_actions[0].choices["snapshot"].print_help()
         return 1
     return args.func(args)
 

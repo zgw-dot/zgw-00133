@@ -2121,5 +2121,331 @@ class TestWaiverFullWorkflowWithBatches(WaiverTestBase):
         self.assertEqual(len(rules_final["rules"]), 2)
 
 
+class TestWaiverSnapshotBasic(WaiverTestBase):
+    def _make_import_file(self, name: str, rule_id: str = "snap_rule_1",
+                          issue_type: str = "bad_checksum") -> str:
+        export_path = os.path.join(self.tmp_dir, name)
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": rule_id,
+                    "issue_type": issue_type,
+                    "reason": "snapshot test rule",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+        return export_path
+
+    def test_dry_run_creates_snapshot(self):
+        self._setup_batch()
+        export_path = self._make_import_file("snap_dry.json", "snap_dry_1")
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "test_snap",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("预演通过", r.stdout)
+
+        r2 = run_cli("waiver", "snapshot", "list", extra_env=self.extra_env)
+        self.assertEqual(r2.returncode, 0)
+        self.assertIn("test_snap", r2.stdout)
+
+        r3 = run_cli("waiver", "snapshot", "show", "test_snap", extra_env=self.extra_env)
+        self.assertEqual(r3.returncode, 0)
+        self.assertIn("waiver import --dry-run", r3.stdout)
+        self.assertIn("[OK]", r3.stdout)
+
+    def test_import_and_rollback_append_to_snapshot(self):
+        self._setup_batch()
+        export_path = self._make_import_file("snap_imp.json", "snap_imp_1")
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "multi_step",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "tester",
+            "--yes",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "multi_step",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        r = run_cli("waiver", "snapshot", "show", "multi_step", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("waiver import", r.stdout)
+        self.assertIn("waiver rollback", r.stdout)
+
+    def test_duplicate_snapshot_name_blocked(self):
+        self._setup_batch()
+        export_path = self._make_import_file("snap_dup.json", "snap_dup_1")
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            "--snapshot", "dup_name",
+            extra_env=self.extra_env,
+        )
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            "--snapshot", "dup_name",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli("waiver", "snapshot", "show", "dup_name", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        lines = r.stdout.strip().split("\n")
+        import_lines = [l for l in lines if "waiver import --dry-run" in l]
+        self.assertEqual(len(import_lines), 2)
+
+    def test_snapshot_export_markdown(self):
+        self._setup_batch()
+        export_path = self._make_import_file("snap_exp.json", "snap_exp_1")
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "export_test",
+            extra_env=self.extra_env,
+        )
+
+        md_path = os.path.join(self.tmp_dir, "export_test.md")
+        r = run_cli(
+            "waiver", "snapshot", "export", "export_test",
+            "--format", "markdown",
+            "--output", md_path,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(os.path.exists(md_path))
+        with open(md_path, "r", encoding="utf-8") as f:
+            md = f.read()
+        self.assertIn("# 操作快照: export_test", md)
+        self.assertIn("waiver import", md)
+
+    def test_snapshot_export_json(self):
+        self._setup_batch()
+        export_path = self._make_import_file("snap_expj.json", "snap_expj_1")
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--snapshot", "json_test",
+            extra_env=self.extra_env,
+        )
+
+        json_path = os.path.join(self.tmp_dir, "json_test.json")
+        r = run_cli(
+            "waiver", "snapshot", "export", "json_test",
+            "--format", "json",
+            "--output", json_path,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["name"], "json_test")
+        self.assertTrue(len(data["records"]) >= 1)
+        self.assertIn("transaction_id", data["records"][0])
+
+
+class TestWaiverSnapshotValidation(WaiverTestBase):
+    def _make_import_file(self, name: str, rule_id: str) -> str:
+        export_path = os.path.join(self.tmp_dir, name)
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": rule_id,
+                    "issue_type": "bad_checksum",
+                    "reason": "validation test",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+        return export_path
+
+    def test_validate_detects_rolled_back_transaction(self):
+        self._setup_batch()
+        export_path = self._make_import_file("val_rb.json", "val_rb_1")
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "validate_test",
+            extra_env=self.extra_env,
+        )
+        run_cli(
+            "waiver", "rollback",
+            "--actor", "tester",
+            "--yes",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+
+        export_path2 = self._make_import_file("val_rb2.json", "val_rb_2")
+        run_cli(
+            "waiver", "import", export_path2,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "snapshot", "show", "validate_test",
+            "--validate",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("校验警告", r.stdout)
+
+    def test_validate_passed_when_consistent(self):
+        self._setup_batch()
+        export_path = self._make_import_file("val_ok.json", "val_ok_1")
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--snapshot", "valid_snap",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "snapshot", "show", "valid_snap",
+            "--validate",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("校验通过", r.stdout)
+
+    def test_failed_command_gap_warning(self):
+        self._setup_batch()
+        bad_path = os.path.join(self.tmp_dir, "nonexistent.json")
+        with open(bad_path, "w", encoding="utf-8") as f:
+            f.write("not json")
+
+        run_cli(
+            "waiver", "import", bad_path,
+            "--actor", "tester",
+            "--snapshot", "fail_snap",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "snapshot", "show", "fail_snap",
+            "--validate",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[FAIL]", r.stdout)
+
+
+class TestWaiverSnapshotPersistence(WaiverTestBase):
+    def _make_import_file(self, name: str, rule_id: str) -> str:
+        export_path = os.path.join(self.tmp_dir, name)
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": rule_id,
+                    "issue_type": "bad_checksum",
+                    "reason": "persistence test",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+        return export_path
+
+    def test_snapshot_survives_restart(self):
+        self._setup_batch()
+        export_path = self._make_import_file("persist1.json", "persist_1")
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "restart_test",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli("waiver", "snapshot", "show", "restart_test", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("waiver import", r.stdout)
+
+        export_path2 = self._make_import_file("persist2.json", "persist_2")
+        run_cli(
+            "waiver", "import", export_path2,
+            "--actor", "tester2",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "restart_test",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli("waiver", "snapshot", "show", "restart_test", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("记录条数: 2", r.stdout)
+
+    def test_snapshot_consistent_with_transactions(self):
+        self._setup_batch()
+        export_path = self._make_import_file("consist.json", "consist_1")
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--backup-dir", self.tmp_dir,
+            "--snapshot", "consist_test",
+            extra_env=self.extra_env,
+        )
+
+        r_tx = run_cli("waiver", "transactions", extra_env=self.extra_env)
+        self.assertEqual(r_tx.returncode, 0)
+        self.assertIn("COMMITTED", r_tx.stdout)
+
+        r_snap = run_cli("waiver", "snapshot", "show", "consist_test", extra_env=self.extra_env)
+        self.assertEqual(r_snap.returncode, 0)
+
+        snap_dir = os.path.join(self.config_dir, "waiver_snapshots")
+        snap_file = os.path.join(snap_dir, "consist_test.json")
+        self.assertTrue(os.path.exists(snap_file))
+        with open(snap_file, "r", encoding="utf-8") as f:
+            snap_data = json.load(f)
+        tx_ids_in_snap = [r["transaction_id"] for r in snap_data["records"] if r.get("transaction_id")]
+        self.assertTrue(len(tx_ids_in_snap) >= 1)
+
+        tx_path = os.path.join(self.config_dir, "waiver_transactions.json")
+        with open(tx_path, "r", encoding="utf-8") as f:
+            tx_data = json.load(f)
+        tx_ids_in_tx = [t["id"] for t in tx_data.get("transactions", [])]
+        for tid in tx_ids_in_snap:
+            self.assertIn(tid, tx_ids_in_tx)
+
+
 if __name__ == "__main__":
     unittest.main()
