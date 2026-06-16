@@ -1,0 +1,855 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+
+
+CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backup_audit_cli.py")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def run_cli(*args: str, env_overrides: dict = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    if env_overrides:
+        env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, CLI, *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+
+def make_temp_backup(tmp_dir: str, files: list, batch_id: str = "TEST-001",
+                     valid_bl: list = None, revocation: list = None,
+                     window_hours: int = 2, tz: str = None) -> str:
+    data_dir = os.path.join(tmp_dir, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    now = datetime.now()
+
+    manifest_files = []
+    for fdef in files:
+        name = fdef["name"]
+        content = fdef.get("content", b"test")
+        fpath = os.path.join(data_dir, name)
+        with open(fpath, "wb") as f:
+            f.write(content)
+        ts = (now - timedelta(minutes=fdef.get("age_minutes", 30))).timestamp()
+        os.utime(fpath, (ts, ts))
+        manifest_files.append({
+            "path": f"data/{name}",
+            "sha256": fdef.get("sha256", hashlib.sha256(content).hexdigest()),
+            "size": fdef.get("size", len(content)),
+            "business_line": fdef.get("business_line", "order_system"),
+        })
+
+    if tz:
+        now_str = now.isoformat()
+        start_str = (now - timedelta(hours=window_hours)).isoformat()
+    else:
+        now_str = now.isoformat()
+        start_str = (now - timedelta(hours=window_hours)).isoformat()
+
+    manifest = {
+        "batch_id": batch_id,
+        "backup_window": {
+            "start": start_str,
+            "end": now_str,
+        },
+        "valid_business_lines": valid_bl or ["order_system"],
+        "files": manifest_files,
+        "revocation_list": revocation if revocation is not None else [],
+    }
+    manifest_path = os.path.join(tmp_dir, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return tmp_dir
+
+
+def make_isolated_config(tmp_dir: str) -> dict:
+    config_dir = os.path.join(tmp_dir, ".backup_audit_config")
+    os.makedirs(config_dir, exist_ok=True)
+    return {
+        "BACKUP_AUDIT_CONFIG_DIR": config_dir,
+        "BACKUP_AUDIT_DATA_DIR": os.path.join(tmp_dir, ".backup_audit_data"),
+        "BACKUP_AUDIT_WAIVER_RULES": os.path.join(config_dir, "waiver_rules.json"),
+        "BACKUP_AUDIT_WAIVER_LOG": os.path.join(config_dir, "waiver_audit_log.json"),
+        "BACKUP_AUDIT_WAIVER_TRANSACTIONS": os.path.join(config_dir, "waiver_transactions.json"),
+        "BACKUP_AUDIT_WINDOW_PROFILES": os.path.join(config_dir, "window_profiles.json"),
+        "BACKUP_AUDIT_WINDOW_PROFILE_LOG": os.path.join(config_dir, "window_profile_log.json"),
+        "BACKUP_AUDIT_WINDOW_PROFILE_APPLICATIONS": os.path.join(config_dir, "window_profile_applications.json"),
+        "BACKUP_AUDIT_WINDOW_PROFILE_SNAPSHOTS": os.path.join(config_dir, "window_profile_snapshots"),
+    }
+
+
+class TestWindowProfileCreateValidation(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_create_")
+        self.env = make_isolated_config(self.tmp_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_create_profile_success(self):
+        now = datetime.now()
+        start = (now - timedelta(hours=2)).isoformat()
+        end = now.isoformat()
+        r = run_cli(
+            "window", "create", "daily_backup",
+            "--window-start", start,
+            "--window-end", end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--business-line", "payment_system",
+            "--notes", "日常备份窗口",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"create should succeed: {r.stderr}")
+        self.assertIn("窗口模板已创建", r.stdout)
+        self.assertIn("daily_backup", r.stdout)
+        self.assertIn("+08:00", r.stdout)
+        self.assertIn("order_system", r.stdout)
+        self.assertIn("payment_system", r.stdout)
+        self.assertIn("日常备份窗口", r.stdout)
+
+    def test_timezone_validation_utc(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "utc_test",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "UTC",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"UTC timezone should be valid: {r.stderr}")
+        self.assertIn("UTC", r.stdout)
+
+    def test_timezone_validation_z(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "z_test",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "Z",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"Z timezone should be valid: {r.stderr}")
+
+    def test_timezone_validation_invalid(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "bad_tz",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "invalid",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "invalid timezone should fail")
+        self.assertIn("时区格式无效", r.stderr)
+        self.assertIn("invalid", r.stderr)
+
+    def test_timezone_validation_invalid_format(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "bad_tz2",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "timezone without sign should fail")
+        self.assertIn("时区格式无效", r.stderr)
+
+    def test_empty_business_lines_rejected(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "no_bl",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "+08:00",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "missing business-line should fail")
+
+    def test_window_start_after_end_rejected(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "bad_window",
+            "--window-start", now.isoformat(),
+            "--window-end", (now - timedelta(hours=2)).isoformat(),
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "start after end should fail")
+        self.assertIn("窗口起始时间必须早于结束时间", r.stderr)
+
+    def test_actor_required(self):
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "no_actor",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "missing actor should fail")
+
+
+class TestWindowProfileNameConflict(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_conflict_")
+        self.env = make_isolated_config(self.tmp_dir)
+        now = datetime.now()
+        self.start = (now - timedelta(hours=2)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_duplicate_name_rejected(self):
+        r1 = run_cli(
+            "window", "create", "daily_backup",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r1.returncode, 0, "first create should succeed")
+
+        r2 = run_cli(
+            "window", "create", "daily_backup",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "payment_system",
+            "--actor", "other",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r2.returncode, 0, "duplicate name should fail")
+        self.assertIn("模板名称已存在", r2.stderr)
+        self.assertIn("daily_backup", r2.stderr)
+
+    def test_list_profiles(self):
+        for name in ["profile1", "profile2", "profile3"]:
+            r = run_cli(
+                "window", "create", name,
+                "--window-start", self.start,
+                "--window-end", self.end,
+                "--timezone", "+08:00",
+                "--business-line", "order_system",
+                "--actor", "admin",
+                env_overrides=self.env,
+            )
+            self.assertEqual(r.returncode, 0)
+
+        r = run_cli("window", "list", env_overrides=self.env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("profile1", r.stdout)
+        self.assertIn("profile2", r.stdout)
+        self.assertIn("profile3", r.stdout)
+        self.assertIn("3 个", r.stdout)
+
+
+class TestWindowProfileApply(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_apply_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        r = run_cli(
+            "window", "create", "test_profile",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--business-line", "payment_system",
+            "--notes", "测试窗口模板",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "good.dat", "content": b"good content"},
+                {"name": "old.dat", "content": b"old", "age_minutes": 60 * 24 * 30},
+            ],
+            valid_bl=["order_system", "payment_system"],
+        )
+
+        r = run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_apply_profile_to_batch(self):
+        r = run_cli(
+            "window", "apply", "test_profile",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"apply should succeed: {r.stderr}")
+        self.assertIn("模板已应用到批次", r.stdout)
+        self.assertIn("test_profile", r.stdout)
+        self.assertIn("+08:00", r.stdout)
+        self.assertIn("order_system", r.stdout)
+        self.assertIn("payment_system", r.stdout)
+
+    def test_apply_nonexistent_profile_fails(self):
+        r = run_cli(
+            "window", "apply", "nonexistent",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("模板不存在或已删除", r.stderr)
+
+    def test_duplicate_apply_fails(self):
+        r1 = run_cli(
+            "window", "apply", "test_profile",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r1.returncode, 0)
+
+        r2 = run_cli(
+            "window", "apply", "test_profile",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r2.returncode, 0, "duplicate apply should fail")
+        self.assertIn("同一批次不能重复套用同一模板", r2.stderr)
+
+    def test_apply_updates_manifest_window(self):
+        run_cli(
+            "window", "apply", "test_profile",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        for f in os.listdir(state_dir):
+            if f.startswith("batch_") and f.endswith(".json"):
+                with open(os.path.join(state_dir, f), "r", encoding="utf-8") as fp:
+                    batch_data = json.load(fp)
+                self.assertEqual(
+                    batch_data["manifest"]["backup_window"]["start"],
+                    self.window_start,
+                )
+                self.assertEqual(
+                    batch_data["manifest"]["backup_window"]["end"],
+                    self.window_end,
+                )
+                self.assertEqual(
+                    batch_data["manifest"]["valid_business_lines"],
+                    ["order_system", "payment_system"],
+                )
+                self.assertIsNotNone(batch_data["window_profile_snapshot"])
+                self.assertEqual(
+                    batch_data["window_profile_snapshot"]["profile_name"],
+                    "test_profile",
+                )
+                return
+        self.fail("batch file not found")
+
+
+class TestWindowProfileTimezonePrecheck(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_tz_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=4)).isoformat()
+        self.window_end = (now - timedelta(hours=1)).isoformat()
+
+        run_cli(
+            "window", "create", "tz_profile",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+00:00",
+            "--business-line", "order_system",
+            "--notes", "UTC 时区窗口",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "in_window.dat", "content": b"in window", "age_minutes": 120},
+                {"name": "out_window.dat", "content": b"out window", "age_minutes": 60 * 24},
+            ],
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_precheck_with_timezone_window(self):
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "tz_profile",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "precheck", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"precheck should succeed: {r.stderr}")
+
+        r = run_cli(
+            "list", self.backup_dir, "--severity", "confirmable",
+            env_overrides=self.env,
+        )
+        self.assertIn("outside_backup_window", r.stdout)
+        self.assertIn("out_window.dat", r.stdout)
+        self.assertIn("(+00:00)", r.stdout)
+
+
+class TestWindowProfileCrossProcess(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_cross_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "cross_profile",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "-05:00",
+            "--business-line", "order_system",
+            "--notes", "跨进程测试模板",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "file1.dat", "content": b"content1"},
+                {"name": "file2.dat", "content": b"content2"},
+            ],
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "cross_profile",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+
+        run_cli(
+            "precheck", self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_resume_shows_template_info(self):
+        r = run_cli(
+            "resume", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("cross_profile", r.stdout)
+        self.assertIn("-05:00", r.stdout)
+        self.assertIn("跨进程测试模板", r.stdout)
+        self.assertIn("ops", r.stdout)
+
+    def test_list_shows_template_info(self):
+        r = run_cli(
+            "list", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("cross_profile", r.stdout)
+
+    def test_export_includes_template_info(self):
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            env_overrides=self.env,
+        )
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        self.assertTrue(os.path.exists(json_path))
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertIsNotNone(report.get("window_profile"))
+        self.assertEqual(report["window_profile"]["profile_name"], "cross_profile")
+        self.assertEqual(report["window_profile"]["timezone"], "-05:00")
+        self.assertEqual(report["window_profile"]["notes"], "跨进程测试模板")
+        self.assertEqual(report["window_profile"]["applied_by"], "ops")
+
+
+class TestWindowProfileImportExport(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_ie_")
+        self.env1 = make_isolated_config(os.path.join(self.tmp_dir, "config1"))
+        self.env2 = make_isolated_config(os.path.join(self.tmp_dir, "config2"))
+
+        now = datetime.now()
+        self.start = (now - timedelta(hours=8)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_export_import_roundtrip(self):
+        profiles = [
+            ("daily", "+08:00", ["order_system", "payment_system"], "日常备份"),
+            ("weekly", "UTC", ["archive_system"], "周备份"),
+            ("monthly", "-05:00", ["order_system", "archive_system", "hr_system"], "月归档"),
+        ]
+
+        for name, tz, bls, notes in profiles:
+            args = [
+                "window", "create", name,
+                "--window-start", self.start,
+                "--window-end", self.end,
+                "--timezone", tz,
+                "--actor", "admin",
+                "--notes", notes,
+            ]
+            for bl in bls:
+                args.extend(["--business-line", bl])
+            r = run_cli(*args, env_overrides=self.env1)
+            self.assertEqual(r.returncode, 0, f"create {name} failed: {r.stderr}")
+
+        export_path = os.path.join(self.tmp_dir, "window_profiles.json")
+        r = run_cli(
+            "window", "export", export_path,
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+        self.assertEqual(r.returncode, 0, f"export failed: {r.stderr}")
+        self.assertIn("3", r.stdout)
+
+        self.assertTrue(os.path.exists(export_path))
+        with open(export_path, "r", encoding="utf-8") as f:
+            exported = json.load(f)
+        self.assertEqual(len(exported["profiles"]), 3)
+        exported_names = {p["name"] for p in exported["profiles"]}
+        self.assertEqual(exported_names, {"daily", "weekly", "monthly"})
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0, f"import failed: {r.stderr}")
+        self.assertIn("新增: 3", r.stdout)
+
+        r = run_cli("window", "list", env_overrides=self.env2)
+        self.assertEqual(r.returncode, 0)
+        for name, tz, bls, notes in profiles:
+            self.assertIn(name, r.stdout)
+            self.assertIn(tz, r.stdout)
+
+        for name, tz, bls, notes in profiles:
+            r = run_cli("window", "show", name, env_overrides=self.env2)
+            self.assertEqual(r.returncode, 0)
+            self.assertIn(name, r.stdout)
+            self.assertIn(tz, r.stdout)
+            self.assertIn(notes, r.stdout)
+            for bl in bls:
+                self.assertIn(bl, r.stdout)
+
+    def test_import_merge_skip_existing(self):
+        run_cli(
+            "window", "create", "existing",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "原始版本",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "single_profile.json")
+        run_cli(
+            "window", "export", export_path,
+            "--name", "existing",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        run_cli(
+            "window", "create", "existing",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+09:00",
+            "--business-line", "other_system",
+            "--notes", "目标版本",
+            "--actor", "admin",
+            env_overrides=self.env2,
+        )
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--mode", "merge",
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("跳过", r.stdout)
+        self.assertIn("已存在，merge 模式不覆盖", r.stdout)
+
+        r = run_cli("window", "show", "existing", env_overrides=self.env2)
+        self.assertIn("+09:00", r.stdout)
+        self.assertIn("目标版本", r.stdout)
+        self.assertIn("other_system", r.stdout)
+
+    def test_import_replace_force_update(self):
+        run_cli(
+            "window", "create", "to_replace",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "原始版本",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "replace_profile.json")
+        run_cli(
+            "window", "export", export_path,
+            "--name", "to_replace",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        run_cli(
+            "window", "create", "to_replace",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+09:00",
+            "--business-line", "other_system",
+            "--notes", "目标版本",
+            "--actor", "admin",
+            env_overrides=self.env2,
+        )
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--mode", "replace",
+            "--force",
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("更新", r.stdout)
+
+        r = run_cli("window", "show", "to_replace", env_overrides=self.env2)
+        self.assertIn("+08:00", r.stdout)
+        self.assertIn("原始版本", r.stdout)
+        self.assertIn("order_system", r.stdout)
+
+
+class TestWindowProfileSnapshotImmutability(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_snap_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.orig_start = (now - timedelta(hours=2)).isoformat()
+        self.orig_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "mutable",
+            "--window-start", self.orig_start,
+            "--window-end", self.orig_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "原始备注",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [{"name": "test.dat", "content": b"content"}],
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "mutable",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_profile_update_preserves_old_batch_snapshot(self):
+        r = run_cli(
+            "window", "show", "mutable",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("版本: 1", r.stdout)
+        orig_fp = None
+        for line in r.stdout.split("\n"):
+            if "指纹" in line:
+                orig_fp = line.split("指纹:")[1].strip()
+                break
+        self.assertIsNotNone(orig_fp)
+
+        now = datetime.now()
+        new_start = (now - timedelta(hours=4)).isoformat()
+        new_end = now.isoformat()
+
+        from backup_audit.window_profile import WindowProfileStore
+        from backup_audit.waiver import get_global_config_dir
+        import os
+        os.environ.update(self.env)
+        store = WindowProfileStore()
+        store.update_profile(
+            name="mutable",
+            actor="admin",
+            window_start=new_start,
+            window_end=new_end,
+            timezone="+09:00",
+            business_lines=["order_system", "payment_system"],
+            notes="已更新",
+        )
+
+        r = run_cli(
+            "window", "show", "mutable",
+            env_overrides=self.env,
+        )
+        self.assertIn("版本: 2", r.stdout)
+
+        r = run_cli(
+            "resume", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("mutable", r.stdout)
+        self.assertIn("v1", r.stdout)
+        self.assertIn("+08:00", r.stdout)
+        self.assertIn("原始备注", r.stdout)
+
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            env_overrides=self.env,
+        )
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertEqual(report["window_profile"]["profile_name"], "mutable")
+        self.assertEqual(report["window_profile"]["profile_version"], 1)
+        self.assertEqual(report["window_profile"]["timezone"], "+08:00")
+        self.assertEqual(report["window_profile"]["notes"], "原始备注")
+        self.assertEqual(report["window_profile"]["window_start"], self.orig_start)
+        self.assertEqual(report["window_profile"]["window_end"], self.orig_end)
+        self.assertEqual(report["window_profile"]["profile_fingerprint"], orig_fp)
+
+
+class TestWindowProfileAuditLog(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_log_")
+        self.env = make_isolated_config(self.tmp_dir)
+        now = datetime.now()
+        self.start = (now - timedelta(hours=2)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_audit_log_records_operations(self):
+        run_cli(
+            "window", "create", "audit_test",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "creator",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "window", "show", "audit_test",
+            "--show-log",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("模板审计日志", r.stdout)
+        self.assertIn("创建", r.stdout)
+        self.assertIn("creator", r.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

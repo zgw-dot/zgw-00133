@@ -4,9 +4,9 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .models import (
     AuditBatch,
@@ -18,6 +18,7 @@ from .models import (
 )
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+_TIMEZONE_PATTERN = re.compile(r"^([+-])(\d{2}):(\d{2})$")
 
 
 class ManifestValidationError(Exception):
@@ -121,17 +122,54 @@ def check_sha256(backup_dir: str, manifest_file: ManifestFile) -> Tuple[bool, st
     return True, ""
 
 
+def parse_timezone_offset(tz: str) -> Optional[timezone]:
+    if tz == "UTC" or tz == "Z":
+        return timezone.utc
+    match = _TIMEZONE_PATTERN.match(tz)
+    if not match:
+        return None
+    sign = 1 if match.group(1) == "+" else -1
+    hours = int(match.group(2))
+    minutes = int(match.group(3))
+    if hours > 14 or (hours == 14 and minutes != 0):
+        return None
+    if minutes > 59:
+        return None
+    delta = timedelta(hours=hours * sign, minutes=minutes * sign)
+    return timezone(delta)
+
+
 def check_backup_window(
-    backup_dir: str, manifest_file: ManifestFile, window_start: str, window_end: str
+    backup_dir: str,
+    manifest_file: ManifestFile,
+    window_start: str,
+    window_end: str,
+    tz: Optional[str] = None,
 ) -> Tuple[bool, str]:
     full_path = os.path.join(backup_dir, manifest_file.path)
     try:
-        mtime = datetime.fromtimestamp(os.path.getmtime(full_path))
-        start = datetime.fromisoformat(window_start)
-        end = datetime.fromisoformat(window_end)
+        mtime_ts = os.path.getmtime(full_path)
+        mtime_utc = datetime.fromtimestamp(mtime_ts, tz=timezone.utc)
+
+        start_naive = datetime.fromisoformat(window_start)
+        end_naive = datetime.fromisoformat(window_end)
+
+        if tz:
+            tz_offset = parse_timezone_offset(tz)
+            if tz_offset is None:
+                return False, f"Invalid timezone format: '{tz}'. Use UTC, Z, or ±HH:MM"
+            start = start_naive.replace(tzinfo=tz_offset)
+            end = end_naive.replace(tzinfo=tz_offset)
+            mtime = mtime_utc.astimezone(tz_offset)
+        else:
+            start = start_naive
+            end = end_naive
+            mtime = datetime.fromtimestamp(mtime_ts)
+
         if mtime < start or mtime > end:
+            tz_info = f" ({tz})" if tz else ""
             return False, (
-                f"File mtime {mtime.isoformat()} outside backup window "
+                f"File mtime {mtime.isoformat()}{tz_info} outside backup window "
                 f"[{window_start}, {window_end}]"
             )
         return True, ""
@@ -192,6 +230,10 @@ def run_precheck(batch: AuditBatch) -> List[Issue]:
     manifest = batch.manifest
     backup_dir = batch.backup_dir
 
+    tz = None
+    if batch.window_profile_snapshot:
+        tz = batch.window_profile_snapshot.get("timezone")
+
     dup_issues = check_duplicate_entries(manifest.files)
     issues.extend(dup_issues)
 
@@ -251,7 +293,7 @@ def run_precheck(batch: AuditBatch) -> List[Issue]:
             )
 
         window_ok, msg = check_backup_window(
-            backup_dir, mf, manifest.backup_window.start, manifest.backup_window.end
+            backup_dir, mf, manifest.backup_window.start, manifest.backup_window.end, tz
         )
         if not window_ok:
             issues.append(
@@ -260,7 +302,7 @@ def run_precheck(batch: AuditBatch) -> List[Issue]:
                     severity=IssueSeverity.CONFIRMABLE,
                     file_path=mf.path,
                     message=msg,
-                    detail={"type": "outside_window"},
+                    detail={"type": "outside_window", "timezone": tz},
                 )
             )
 

@@ -3,42 +3,63 @@
 读取 manifest，校验文件路径、SHA256、大小、备份窗口和业务线，生成批次问题清单；
 运维可将问题标记为待补/已确认/忽略，支持撤销复核，导出区分阻断/可确认的报告。
 
+**新增功能：备份窗口模板**
+- 支持创建可复用的窗口模板，包含时间窗、时区、业务线范围和备注
+- 完整 CLI 链路：`window create/list/show/apply/import/export`
+- 导入批次或跑 `precheck` 时只有显式引用模板才生效，不会悄悄套默认值
+- 模板名重名、同一批次重复套用、模板已被删改、时区格式或业务线不合法都会被拦截并说明原因
+- 所有操作记审计日志，模板库、应用记录和导出文件落盘持久化
+- 跨进程恢复：`resume` 或 `show` 可查看谁在什么时候用了哪个模板
+- 快照机制：模板被修改时，旧批次保留当时的生效快照，不被新内容覆盖
+- 支持模板批量导出导入，方便跨环境迁移和对账
+
 ## 快速开始
 
 ```bash
 # 1. 生成样例备份数据
 python generate_samples.py
 
-# 2. 导入 manifest 并创建验收批次
-python backup_audit_cli.py import sample_backup/manifest.json sample_backup
+# 2. 创建备份窗口模板（可选，复用常用配置）
+python backup_audit_cli.py window create daily_backup \
+  --window-start 2024-01-01T00:00:00 \
+  --window-end 2024-12-31T23:59:59 \
+  --timezone +08:00 \
+  --business-line order_system \
+  --business-line payment_system \
+  --notes "日常备份窗口（东八区）" \
+  --actor admin
 
-# 3. 运行预检（只读，不修改源文件）
+# 3. 导入 manifest 并创建验收批次（可选：显式引用窗口模板）
+python backup_audit_cli.py import sample_backup/manifest.json sample_backup \
+  --window-profile daily_backup --actor ops
+
+# 4. 运行预检（只读，不修改源文件）
 python backup_audit_cli.py precheck sample_backup
 
-# 4. 按严重程度筛选问题，方便逐条处理
+# 5. 按严重程度筛选问题，方便逐条处理
 python backup_audit_cli.py list sample_backup --severity blocking
 python backup_audit_cli.py list sample_backup --severity confirmable
 
-# 5. 复核：标记问题状态
+# 6. 复核：标记问题状态
 python backup_audit_cli.py review sample_backup <问题ID> --status pending_fix --assignee zhangsan --notes "联系运维补传"
 
-# 6. 撤销上一条复核
+# 7. 撤销上一条复核
 python backup_audit_cli.py undo sample_backup
 
-# 7. 签收批次（阻断问题必须全部处理，否则需要 --force-with-reason）
+# 8. 签收批次（阻断问题必须全部处理，否则需要 --force-with-reason）
 python backup_audit_cli.py finalize sample_backup --signer wangwu --reason "所有阻断问题已修复，可确认问题已人工审核"
 
-# 8. 如确需带阻断问题放行，使用强制签收（必须写清理由）
+# 9. 如确需带阻断问题放行，使用强制签收（必须写清理由）
 python backup_audit_cli.py finalize sample_backup --signer manager --reason "经风险评估委员会审批，特批该批次带问题放行" --force-with-reason
 
-# 9. 签收后只读，禁止 precheck/review/undo/重复 finalize
+# 10. 签收后只读，禁止 precheck/review/undo/重复 finalize
 # 如需重新编辑，重开已签收批次
 python backup_audit_cli.py reopen sample_backup --reopener zhangsan --reason "发现漏处理的阻断问题，需补充复核"
 
-# 10. 导出报告（JSON + CSV，包含签收摘要和操作日志）
+# 11. 导出报告（JSON + CSV，包含签收摘要和操作日志）
 python backup_audit_cli.py export sample_backup --output sample_backup/reports
 
-# 11. 新进程恢复已有批次
+# 12. 新进程恢复已有批次
 python backup_audit_cli.py resume sample_backup
 ```
 
@@ -47,13 +68,19 @@ python backup_audit_cli.py resume sample_backup
 ### `import` — 导入 manifest 并创建验收批次
 
 ```bash
-python backup_audit_cli.py import <manifest.json路径> <备份包目录> [--force]
+python backup_audit_cli.py import <manifest.json路径> <备份包目录> [--force] [--window-profile 模板名] [--actor 操作人]
 ```
 
 - 校验 manifest 中每条文件的 `sha256` 字段（必须为 64 位十六进制）
 - 校验 `size` 字段（必须为非负整数）和 `path` 字段（不能为空）
 - 格式非法时：列出所有错误行号和字段，**不创建批次，不污染已有状态**
 - 如果备份目录已有批次，需 `--force` 覆盖或使用 `resume` 继续
+- **窗口模板支持**：
+  - 使用 `--window-profile <模板名>` 显式引用已创建的窗口模板
+  - 模板中的时间窗、时区、业务线会自动应用到批次，并保留快照
+  - 模板必须先通过 `window create` 创建
+  - 模板不存在或无效时，批次仍会创建，但模板不会应用，并给出明确提示
+  - **不会悄悄套用默认值**，必须显式指定才生效
 
 **预期输出（成功）：**
 
@@ -564,20 +591,273 @@ Manifest: /path/to/manifest.json
   操作日志:    2 条
 ```
 
+### `window create` — 创建备份窗口模板
+
+```bash
+python backup_audit_cli.py window create <模板名> \
+  --window-start <ISO时间> \
+  --window-end <ISO时间> \
+  --timezone <时区> \
+  --business-line <业务线> [--business-line <业务线> ...] \
+  [--notes <备注>] \
+  --actor <操作人>
+```
+
+- **时区格式**：支持 `UTC`、`Z`、`±HH:MM`（如 `+08:00`、`-05:00`）
+- **业务线**：可多次指定 `--business-line` 添加多个业务线
+- **时间窗校验**：起始时间必须早于结束时间
+- **名称唯一**：模板名称不能重复（包括已删除的模板）
+- **审计日志**：所有操作都会记录审计日志，包含操作人、时间、变更内容
+
+**预期输出（成功）：**
+
+```
+窗口模板已创建: daily_backup
+  操作人: admin
+  创建时间: 2024-01-15T10:30:00.123456
+  版本: 1
+  时间窗: 2024-01-01T00:00:00 ~ 2024-12-31T23:59:59
+  时区: +08:00
+  业务线: order_system, payment_system
+  备注: 日常备份窗口（东八区）
+```
+
+**错误场景：**
+
+| 错误场景 | 退出码 | 错误提示 |
+|---------|--------|---------|
+| 时区格式无效 | 40 | `时区格式无效: 'invalid'。必须为 UTC、Z 或 ±HH:MM 格式（如 +08:00、-05:00）` |
+| 模板名已存在 | 41 | `模板名称已存在: 'daily_backup'。请使用其他名称，或使用 update 命令更新现有模板。` |
+| 时间窗无效 | 45 | `窗口起始时间必须早于结束时间` |
+| 缺少业务线 | 45 | `至少需要指定一个业务线` |
+
+### `window list` — 列出所有窗口模板
+
+```bash
+python backup_audit_cli.py window list [--include-inactive]
+```
+
+- 默认只显示活跃（未删除）的模板
+- `--include-inactive`：包含已删除的模板
+- 显示每个模板的版本、时区、窗口范围、业务线、备注
+
+**预期输出：**
+
+```
+=== 窗口模板列表 (3 个) ===
+  * daily_backup
+    版本: 2 | 时区: +08:00
+    窗口: 2024-01-01T00:00:00 ~ 2024-12-31T23:59:59
+    业务线: order_system, payment_system
+    创建: 2024-01-15T10:30:00 | 更新: 2024-01-20T14:20:00
+    备注: 日常备份窗口（东八区）
+
+  * weekly_backup
+    版本: 1 | 时区: UTC
+    窗口: 2024-01-01T00:00:00 ~ 2024-12-31T23:59:59
+    业务线: archive_system
+    创建: 2024-01-10T09:00:00 | 更新: 2024-01-10T09:00:00
+    备注: 周备份窗口（UTC 时区）
+```
+
+### `window show` — 查看模板详情、应用记录和审计日志
+
+```bash
+python backup_audit_cli.py window show <模板名> [--show-log] [--log-limit N]
+```
+
+- 显示模板的完整信息：名称、版本、创建/更新时间、时区、窗口、业务线、备注、指纹
+- `--show-log`：显示模板的审计日志（创建、更新、应用、删除等）
+- `--log-limit N`：审计日志显示条数（默认 20 条）
+- 显示模板的应用记录：哪些批次在什么时候应用了哪个版本的模板
+
+**预期输出（含审计日志）：**
+
+```
+=== 窗口模板详情 ===
+  名称: daily_backup
+  版本: 2
+  状态: 活跃
+  指纹: a1b2c3d4e5f67890
+  创建人: admin
+  创建时间: 2024-01-15T10:30:00
+  更新时间: 2024-01-20T14:20:00
+  时间窗: 2024-01-01T00:00:00 ~ 2024-12-31T23:59:59
+  时区: +08:00
+  业务线: order_system, payment_system
+  备注: 日常备份窗口（东八区）
+
+=== 模板应用记录 ===
+  - 批次 BATCH-2024-001 (v1, +08:00)
+    应用人: ops | 应用时间: 2024-01-16T08:00:00
+    指纹: a1b2c3d4e5f67890
+
+=== 模板审计日志 (最近 5 条) ===
+  [1] 2024-01-20T14:20:00 | admin | 更新
+      业务线变更: ['order_system'] → ['order_system', 'payment_system']
+  [2] 2024-01-16T08:00:00 | ops | 应用
+      应用到批次: BATCH-2024-001
+  [3] 2024-01-15T10:30:00 | admin | 创建
+      初始版本 v1
+```
+
+### `window apply` — 将模板应用到指定批次
+
+```bash
+python backup_audit_cli.py window apply <模板名> <备份包目录> \
+  [--batch-id <批次ID>] \
+  --actor <操作人> \
+  [--expected-fingerprint <指纹>] \
+  [--force]
+```
+
+- **显式引用**：只有显式调用 `apply` 或在 `import` 时指定 `--window-profile` 才会应用模板
+- **快照机制**：应用时会保存模板快照到批次，后续模板修改不会影响已应用的批次
+- **防重复**：同一批次不能重复套用同一模板
+- **防篡改**：使用 `--expected-fingerprint` 可以验证模板自上次查看后未被修改
+- `--force`：即使模板已被修改也强制应用
+
+**预期输出（成功）：**
+
+```
+模板已应用到批次: BATCH-2024-001
+  模板: daily_backup (版本 v2)
+  应用人: ops
+  应用时间: 2024-01-25T10:00:00
+  指纹: a1b2c3d4e5f67890
+
+  生效配置:
+    时间窗: 2024-01-01T00:00:00 ~ 2024-12-31T23:59:59
+    时区: +08:00
+    业务线: order_system, payment_system
+    备注: 日常备份窗口（东八区）
+
+提示: 下次 precheck 将使用上述窗口和业务线配置进行校验。
+```
+
+**错误场景：**
+
+| 错误场景 | 退出码 | 错误提示 |
+|---------|--------|---------|
+| 模板不存在 | 42 | `模板不存在或已删除: 'daily_backup'。请先创建模板或使用其他模板。` |
+| 模板已被修改 | 43 | `模板 'daily_backup' 自上次查看后已被修改。请使用 --force 强制应用，或使用新的指纹。` |
+| 重复应用 | 44 | `同一批次不能重复套用同一模板: 'daily_backup' 已应用于批次 BATCH-2024-001。` |
+
+### `window export` — 导出窗口模板到 JSON 文件
+
+```bash
+python backup_audit_cli.py window export <输出文件路径> \
+  [--name <模板名>] [--name <模板名> ...] \
+  --actor <操作人>
+```
+
+- 不指定 `--name` 则导出所有活跃模板
+- 可多次指定 `--name` 导出特定模板
+- 导出内容包含：模板完整信息、版本历史、指纹
+- 导出文件包含完整性校验，可用于跨环境迁移
+
+**预期输出：**
+
+```
+窗口模板已导出: /path/to/window_profiles.json
+  操作人: admin
+  导出模板数: 3
+    - daily_backup (v2)
+    - weekly_backup (v1)
+    - monthly_backup (v1)
+```
+
+### `window import` — 从 JSON 文件导入窗口模板
+
+```bash
+python backup_audit_cli.py window import <输入文件路径> \
+  --actor <操作人> \
+  [--mode merge|replace] \
+  [--force]
+```
+
+- **导入模式**：
+  - `merge`（默认）：合并导入，跳过已存在的模板
+  - `replace`：替换已存在的模板（需 `--force` 确认）
+- **完整性校验**：导入时校验导出文件的完整性和格式
+- **审计日志**：记录每个模板的导入结果（新增/更新/跳过/失败）
+- **对账**：导入完成后可对比导出文件确保数据一致性
+
+**预期输出（merge 模式）：**
+
+```
+窗口模板导入完成 (模式: merge)
+  操作人: admin
+  源文件: /path/to/window_profiles.json
+  文件中模板总数: 3
+
+  新增: 2 个
+    + daily_backup (v2)
+    + weekly_backup (v1)
+  跳过: 1 个 (已存在，merge 模式不覆盖)
+    - monthly_backup (已存在，merge 模式不覆盖)
+```
+
+**预期输出（replace 模式）：**
+
+```
+窗口模板导入完成 (模式: replace)
+  操作人: admin
+  源文件: /path/to/window_profiles.json
+  文件中模板总数: 3
+
+  新增: 2 个
+    + daily_backup (v2)
+    + weekly_backup (v1)
+  更新: 1 个
+    * monthly_backup (v1 → v2)
+```
+
 ## 持久化与跨进程一致性
 
-- 所有状态存储在 `<备份目录>/.audit_state/batch_<批次ID>.json`
+- 所有批次状态存储在 `<备份目录>/.audit_state/batch_<批次ID>.json`
+- 窗口模板库存储在全局配置目录：`~/.backup_audit_config/window_profiles.json`
+- 窗口模板应用记录存储在：`~/.backup_audit_config/window_profile_applications.json`
+- 窗口模板快照存储在：`~/.backup_audit_config/window_profile_snapshots/`
+- 窗口模板审计日志存储在：`~/.backup_audit_config/window_profile_log.json`
 - 问题 ID 由 `type:file_path:message` 的 SHA1 前 12 位生成，跨进程一致
 - review 历史快照持久化，新进程可继续 undo
 - export 的 JSON/CSV 报告中，问题 ID、状态、备注、处理人与批次状态文件完全一致
-- **签收 / 重开 / 操作日志的持久化字段**（跨进程 resume/list/export 都能看到）：
+
+### 批次持久化字段
 
 | 字段 | 类型 | 说明 | 出现在哪些命令 |
 |------|------|------|--------------|
 | `status` | string | `open` / `finalized` | `resume`、`list`、`export` 报告 |
 | `signoff` | object | 当前签收信息（未签收为 null）：signer/reason/timestamp/forced/unresolved_*_count | `resume`、`list`、`export` 报告 |
 | `reopen_records` | array | 全部重开历史（每次重开保留前一次签收）：reopener/reason/timestamp/previous_signoff | `export` 报告 |
-| `operation_log` | array | 所有关键操作完整历史：precheck/review/undo/finalize/reopen/export | `export` 报告、print_summary 显示条数 |
+| `operation_log` | array | 所有关键操作完整历史：precheck/review/undo/finalize/reopen/export/window_profile_apply | `export` 报告、print_summary 显示条数 |
+| `window_profile_snapshot` | object | 应用的窗口模板快照（未应用为 null），包含完整模板内容和版本 | `resume`、`list`、`export` 报告 |
+| `window_profile_ref` | string | 引用的模板名称（未应用为 null） | `export` 报告 |
+
+### 窗口模板快照机制（旧批次保留历史版本）
+
+当模板被修改时，**已应用该模板的批次不会被新内容覆盖**：
+
+1. 应用模板时，会生成模板内容的**快照**并嵌入批次文件
+2. 快照包含：模板名称、版本、时间窗、时区、业务线、备注、应用人、应用时间、指纹
+3. 后续模板修改（版本号递增）不会影响已存在的批次快照
+4. `resume` / `list` / `export` 都会显示当时应用的版本号（如 `v1`），而不是当前版本
+5. 跨进程恢复后，快照信息完整保留，可追溯当时的生效配置
+
+**示例：模板 v1 应用到批次后被修改为 v2**
+
+```
+# 应用时的模板版本 v1
+窗口模板: daily_backup (v1)
+  时区: +08:00
+  业务线: order_system
+
+# 模板被修改为 v2（时区改为 +09:00，新增业务线 payment_system）
+# 但旧批次仍然保留 v1 快照：
+resume 旧批次 → 显示 daily_backup (v1)，时区 +08:00，业务线 order_system
+resume 新批次 → 显示 daily_backup (v2)，时区 +09:00，业务线 order_system, payment_system
+```
 
 - 跨进程场景：
   - 终端 A：import → precheck → review → finalize（强制放行）
@@ -596,19 +876,39 @@ python generate_samples.py
 
 # 运行回归测试
 python -m pytest tests/test_regression.py -v
+
+# 运行窗口模板专项测试
+python -m pytest tests/test_window_profile.py -v
+
+# 运行所有测试
+python -m pytest tests/ -v
 ```
 
 **测试覆盖：**
+
+### 回归测试（test_regression.py，35 个用例）
 
 | 测试类 | 覆盖场景 |
 |--------|---------|
 | `TestBadSha256Rejection` | 短哈希、非十六进制、空哈希、多条错误报告、不创建批次、合法哈希通过 |
 | `TestReviewUndo` | 标记后撤销恢复原状态、空撤销提示、连续撤销两条 |
 | `TestCrossProcessExport` | JSON/CSV 报告与 review 状态一致、跨进程 resume |
-
 | `TestSignoffBlocking` | 阻断问题未处理禁止签收、强制无理由拒绝、无理由拒绝 |
 | `TestForcedSignoff` | 强制放行成功、只读拦截 precheck/review/undo/重复 finalize |
 | `TestReopenWorkflow` | 参数校验、恢复编辑、重开记录持久化、重开开放批次拒绝、重新签收 |
+
+### 窗口模板专项测试（test_window_profile.py，23 个用例）
+
+| 测试类 | 覆盖场景 |
+|--------|---------|
+| `TestWindowProfileCreateValidation` | 模板创建成功、时区格式验证（UTC/Z/±HH:MM）、无效时区拒绝、时间窗校验、业务线必填、操作人必填 |
+| `TestWindowProfileNameConflict` | 重名模板拒绝、模板列表展示 |
+| `TestWindowProfileApply` | 模板应用成功、模板不存在拒绝、重复应用拒绝、应用后 manifest 窗口更新 |
+| `TestWindowProfileTimezonePrecheck` | 带时区窗口的 precheck 校验、时区偏移下的窗口外检测 |
+| `TestWindowProfileCrossProcess` | 跨进程 resume 显示模板信息、list 显示模板信息、export 包含模板信息 |
+| `TestWindowProfileImportExport` | 导出导入全量对账、merge 模式跳过已存在、replace 模式强制更新 |
+| `TestWindowProfileSnapshotImmutability` | 模板修改后旧批次保留 v1 快照、新批次使用 v2 版本、导出报告包含正确快照 |
+| `TestWindowProfileAuditLog` | 审计日志记录创建、应用、修改、删除等操作 |
 | `TestCleanSignoff` | 无阻断批次正常签收 |
 | `TestCrossProcessSignoff` | 跨进程 resume/list 显示签收状态、export 包含签收摘要和日志、reopen 历史保留 |
 | `TestListSeverityFilter` | blocking/confirmable 筛选正确、组合筛选、帮助说明一致 |
@@ -618,27 +918,37 @@ python -m pytest tests/test_regression.py -v
 ```
 backup_audit/
   __init__.py          # 包定义
-  models.py            # 数据模型：Issue, Manifest, AuditBatch, review_history
-                        # 新增：BatchStatus, Signoff, ReopenRecord, OperationLogEntry
-                        # 新增方法：finalize(), reopen(), is_readonly(), count_unresolved_*()
-  validator.py         # 校验逻辑 + ManifestValidationError
-  reporter.py          # 报告导出（JSON/CSV）+ 概要打印（含签收状态）
-  cli.py               # CLI 命令入口：import/precheck/list/review/undo/export/resume
-                        # 新增：finalize（签收）、reopen（重开）
-                        # 新增：只读拦截逻辑，防止已签收批次被修改
-backup_audit_cli.py    # 可执行入口
+  models.py              # 数据模型：Issue, Manifest, AuditBatch
+                            # 新增：BatchStatus, Signoff, ReopenRecord, OperationLogEntry
+                            # 新增：window_profile_snapshot, window_profile_ref 字段
+                            # 新增方法：finalize(), reopen(), is_readonly(), count_unresolved_*()
+                            # 新增方法：apply_window_profile_snapshot(), get_window_profile_info()
+  validator.py             # 校验逻辑 + ManifestValidationError
+                            # 新增：时区解析、时区感知的窗口校验
+  reporter.py            # 报告导出（JSON/CSV）+ 概要打印（含模板信息）
+  cli.py                 # CLI 命令入口
+                            # 新增：window create/list/show/apply/import/export
+                            # 新增：finalize（签收）、reopen（重开）
+                            # 新增：import 支持 --window-profile 参数
+                            # 新增：参数预处理支持负时区值（-05:00）
+  window_profile.py        # 窗口模板核心模块（新增）
+                            # 数据模型：WindowProfile, WindowProfileSnapshot,
+                            #         WindowProfileApplicationRecord,
+                            #         WindowProfileAuditLogEntry,
+                            #         WindowProfileExportBundle
+                            # 存储类：WindowProfileStore（CRUD + 验证 + 导入导出）
+                            # 验证函数：validate_timezone(), validate_window_times(),
+                            #          validate_business_lines()
+                            # 自定义异常：ValidationError, ConflictError, NotFoundError 等
+  waiver.py              # 豁免规则管理
+  snapshot.py              # 操作快照管理
+backup_audit_cli.py        # 可执行入口
 tests/
-tests/
-  test_regression.py   # 回归测试（10个测试类，35个测试用例）
-  test_readme_doc.py   # README 文档完整性回归检查
-generate_samples.py    # 生成样例备份数据（含各种异常场景）
+  test_regression.py     # 回归测试（10个测试类，35个测试用例）
+  test_window_profile.py  # 窗口模板专项测试（8个测试类，23个测试用例）
+  test_waiver.py           # 豁免规则专项测试
+generate_samples.py        # 生成样例备份数据（含各种异常场景）
 ```
-backup_audit_cli.py    # 可执行入口
-tests/
-  test_regression.py   # 回归测试（10个测试类，35个测试用例）
-  test_waiver.py       # 豁免规则专项测试
-generate_samples.py    # 生成样例备份数据（含各种异常场景）
-`
 
 ## 豁免规则管理
 

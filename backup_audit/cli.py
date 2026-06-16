@@ -40,6 +40,19 @@ from .snapshot import (
     SnapshotNameConflictError,
     build_config_summary,
 )
+from .window_profile import (
+    WindowProfile,
+    WindowProfileStore,
+    WindowProfileSnapshot,
+    WindowProfileValidationError,
+    WindowProfileConflictError,
+    WindowProfileNotFoundError,
+    WindowProfileModifiedError,
+    WindowProfileAlreadyAppliedError,
+    validate_timezone,
+    validate_window_times,
+    validate_business_lines,
+)
 
 
 STORAGE_DIR_NAME = ".audit_state"
@@ -303,6 +316,34 @@ def cmd_import(args: argparse.Namespace) -> int:
     print(f"  Manifest: {manifest_path}")
     print(f"  备份目录: {backup_dir}")
     print(f"  Manifest 中的文件数: {len(manifest.files)}")
+
+    if getattr(args, "window_profile", None):
+        profile_name = args.window_profile
+        store = WindowProfileStore()
+        actor = getattr(args, "actor", "system")
+        try:
+            snapshot = store.apply_to_batch(
+                profile_name=profile_name,
+                batch_id=batch.id,
+                backup_dir=backup_dir,
+                actor=actor,
+            )
+            batch.apply_window_profile_snapshot(snapshot.to_dict(), profile_name)
+            save_batch(batch, backup_dir)
+            print(f"\n已自动应用窗口模板: {profile_name}")
+            print(f"  模板版本: v{snapshot.profile_version}")
+            print(f"  时区: {snapshot.timezone}")
+            print(f"  时间窗: {snapshot.window_start} ~ {snapshot.window_end}")
+            print(f"  业务线: {', '.join(snapshot.business_lines)}")
+        except WindowProfileNotFoundError as e:
+            print(f"\n[WARN] 模板引用失败: {e}", file=sys.stderr)
+            print("  批次已创建，但未应用模板。请先创建模板后手动 apply。", file=sys.stderr)
+            print(f"  请执行: python backup_audit_cli.py window apply {profile_name} {backup_dir} --actor {actor}", file=sys.stderr)
+            return 49
+        except (WindowProfileAlreadyAppliedError, WindowProfileValidationError) as e:
+            print(f"\n[WARN] 模板应用失败: {e}", file=sys.stderr)
+            return 49
+
     return 0
 
 
@@ -1432,6 +1473,219 @@ def cmd_waiver_rescan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_window_profile_create(args: argparse.Namespace) -> int:
+    store = WindowProfileStore()
+    business_lines = args.business_line if args.business_line else []
+    profile = WindowProfile.create(
+        name=args.name,
+        window_start=args.window_start,
+        window_end=args.window_end,
+        timezone=args.timezone,
+        business_lines=business_lines,
+        notes=args.notes or "",
+        actor=args.actor,
+    )
+    try:
+        profile = store.create_profile(profile, args.actor)
+    except (WindowProfileValidationError, WindowProfileConflictError) as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 40
+    print(f"窗口模板已创建: {profile.name}")
+    print(f"  操作人: {profile.actor}")
+    print(f"  创建时间: {profile.created_at}")
+    print(f"  版本: {profile.version}")
+    print(f"  时间窗: {profile.window_start} ~ {profile.window_end}")
+    print(f"  时区: {profile.timezone}")
+    print(f"  业务线: {', '.join(profile.business_lines)}")
+    if profile.notes:
+        print(f"  备注: {profile.notes}")
+    return 0
+
+
+def cmd_window_profile_list(args: argparse.Namespace) -> int:
+    store = WindowProfileStore()
+    profiles = store.list_profiles(include_inactive=args.include_inactive)
+    if not profiles:
+        print("暂无窗口模板。")
+        return 0
+    print(f"=== 窗口模板列表 ({len(profiles)} 个) ===")
+    for p in profiles:
+        status_tag = " [已删除]" if not p.active else ""
+        print(f"  * {p.name}{status_tag}")
+        print(f"    版本: {p.version} | 时区: {p.timezone}")
+        print(f"    窗口: {p.window_start} ~ {p.window_end}")
+        print(f"    业务线: {', '.join(p.business_lines)}")
+        print(f"    创建: {p.created_at} | 更新: {p.updated_at}")
+        if p.notes:
+            print(f"    备注: {p.notes}")
+        print()
+    return 0
+
+
+def cmd_window_profile_show(args: argparse.Namespace) -> int:
+    store = WindowProfileStore()
+    profile = store.get_profile_including_inactive(args.name)
+    if profile is None:
+        print(f"错误: 模板不存在: '{args.name}'", file=sys.stderr)
+        return 41
+    status = "活跃" if profile.active else "已删除"
+    print(f"=== 窗口模板: {profile.name} ===")
+    print(f"  状态: {status}")
+    print(f"  版本: {profile.version}")
+    print(f"  操作人: {profile.actor}")
+    print(f"  创建时间: {profile.created_at}")
+    print(f"  更新时间: {profile.updated_at}")
+    print(f"  指纹: {profile.fingerprint()}")
+    print()
+    print(f"  时间窗:")
+    print(f"    起始: {profile.window_start}")
+    print(f"    结束: {profile.window_end}")
+    print(f"    时区: {profile.timezone}")
+    print()
+    print(f"  业务线范围: {', '.join(profile.business_lines)}")
+    if profile.notes:
+        print(f"  备注: {profile.notes}")
+    print()
+
+    apps = store.get_applications_for_profile(args.name)
+    if apps:
+        print(f"  应用记录 ({len(apps)} 次):")
+        for a in apps:
+            print(f"    - 批次 {a.batch_id} | {a.applied_at} | by {a.applied_by}")
+            print(f"      版本: v{a.profile_version} | 指纹: {a.profile_fingerprint}")
+        print()
+
+    if args.show_log:
+        log_entries = store.get_audit_log(limit=args.log_limit)
+        profile_log = [e for e in log_entries if e.profile_name == args.name]
+        if profile_log:
+            print(f"=== 模板审计日志 ===")
+            action_labels = {
+                "window_profile_create": "创建",
+                "window_profile_update": "更新",
+                "window_profile_delete": "删除",
+                "window_profile_apply": "应用",
+                "window_profile_import": "导入",
+                "window_profile_export": "导出",
+            }
+            for e in profile_log:
+                action = action_labels.get(e.action.value, e.action.value)
+                print(f"  [{e.timestamp}] {action} by {e.actor}")
+                if e.batch_id:
+                    print(f"    批次: {e.batch_id}")
+                if e.detail:
+                    print(f"    详情: {json.dumps(e.detail, ensure_ascii=False)}")
+            print()
+    return 0
+
+
+def cmd_window_profile_apply(args: argparse.Namespace) -> int:
+    backup_dir = os.path.abspath(args.backup_dir)
+    batch = load_batch(backup_dir, args.batch_id)
+    if not batch:
+        print("错误: 未找到批次，请先运行 import", file=sys.stderr)
+        return 1
+    rc = check_readonly(batch, "window profile apply")
+    if rc is not None:
+        return rc
+    store = WindowProfileStore()
+    try:
+        snapshot = store.apply_to_batch(
+            profile_name=args.name,
+            batch_id=batch.id,
+            backup_dir=backup_dir,
+            actor=args.actor,
+            expected_fingerprint=args.expected_fingerprint,
+            force=args.force,
+        )
+    except WindowProfileNotFoundError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 42
+    except WindowProfileModifiedError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 43
+    except WindowProfileAlreadyAppliedError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 44
+    except WindowProfileValidationError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 45
+    batch.apply_window_profile_snapshot(snapshot.to_dict(), args.name)
+    save_batch(batch, backup_dir)
+    print(f"模板已应用到批次: {batch.id}")
+    print(f"  模板: {snapshot.profile_name} (版本 v{snapshot.profile_version})")
+    print(f"  应用人: {snapshot.applied_by}")
+    print(f"  应用时间: {snapshot.applied_at}")
+    print(f"  指纹: {snapshot.profile_fingerprint}")
+    print()
+    print(f"  生效配置:")
+    print(f"    时间窗: {snapshot.window_start} ~ {snapshot.window_end}")
+    print(f"    时区: {snapshot.timezone}")
+    print(f"    业务线: {', '.join(snapshot.business_lines)}")
+    if snapshot.notes:
+        print(f"    备注: {snapshot.notes}")
+    print()
+    print("提示: 下次 precheck 将使用上述窗口和业务线配置进行校验。")
+    return 0
+
+
+def cmd_window_profile_export(args: argparse.Namespace) -> int:
+    store = WindowProfileStore()
+    output_path = os.path.abspath(args.output)
+    profile_names = args.name if args.name else None
+    try:
+        bundle = store.export_profiles(output_path, args.actor, profile_names)
+    except WindowProfileNotFoundError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 46
+    except OSError as e:
+        print(f"错误: 导出失败 - {e}", file=sys.stderr)
+        return 47
+    print(f"窗口模板已导出: {output_path}")
+    print(f"  操作人: {args.actor}")
+    print(f"  导出模板数: {len(bundle.profiles)}")
+    for p in bundle.profiles:
+        print(f"    - {p.name} (v{p.version})")
+    return 0
+
+
+def cmd_window_profile_import(args: argparse.Namespace) -> int:
+    store = WindowProfileStore()
+    input_path = os.path.abspath(args.input)
+    try:
+        result = store.import_profiles(
+            input_path,
+            args.actor,
+            mode=args.mode,
+            force=args.force,
+        )
+    except WindowProfileValidationError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 48
+    print(f"窗口模板导入完成 (模式: {args.mode})")
+    print(f"  操作人: {args.actor}")
+    print(f"  源文件: {input_path}")
+    print(f"  文件中模板总数: {result['total']}")
+    print()
+    if result["added"]:
+        print(f"  新增: {len(result['added'])} 个")
+        for name in result["added"]:
+            print(f"    + {name}")
+    if result["updated"]:
+        print(f"  更新: {len(result['updated'])} 个")
+        for name in result["updated"]:
+            print(f"    * {name}")
+    if result["skipped"]:
+        print(f"  跳过: {len(result['skipped'])} 个")
+        for s in result["skipped"]:
+            print(f"    = {s['name']}: {s['reason']}")
+    if result["conflicts"]:
+        print(f"  冲突/无效: {len(result['conflicts'])} 个")
+        for c in result["conflicts"]:
+            print(f"    ! {c['name']}: {c['error']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backup-audit",
@@ -1443,6 +1697,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("manifest", help="manifest.json 路径")
     p_import.add_argument("backup_dir", help="备份包目录")
     p_import.add_argument("--force", action="store_true", help="强制重新导入（覆盖已有批次）")
+    p_import.add_argument("--window-profile", help="窗口模板名称，导入后自动应用该模板（需先创建）")
+    p_import.add_argument("--actor", default="system", help="操作人（用于模板应用日志）")
     p_import.set_defaults(func=cmd_import)
 
     p_precheck = subparsers.add_parser("precheck", help="运行预检（只读，不修改源文件）")
@@ -1686,11 +1942,77 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap_export.add_argument("--actor", default="", help="导出操作人（用于审计日志）")
     p_snap_export.set_defaults(func=cmd_snapshot_export)
 
+    p_window_profile = subparsers.add_parser("window", help="备份窗口模板管理")
+    window_sub = p_window_profile.add_subparsers(dest="window_command", help="窗口模板子命令")
+
+    p_win_create = window_sub.add_parser("create", help="创建备份窗口模板")
+    p_win_create.add_argument("name", help="模板名称（唯一标识）")
+    p_win_create.add_argument("--window-start", required=True, help="窗口起始时间 (ISO 格式，如 2024-01-01T00:00:00")
+    p_win_create.add_argument("--window-end", required=True, help="窗口结束时间 (ISO 格式，如 2024-01-01T23:59:59")
+    p_win_create.add_argument("--timezone", required=True, help="时区，格式: UTC、Z 或 ±HH:MM（如 +08:00、-05:00）")
+    p_win_create.add_argument("--business-line", action="append", required=True, help="业务线，可多次指定（如 --business-line order_system --business-line payment_system）")
+    p_win_create.add_argument("--notes", help="备注说明")
+    p_win_create.add_argument("--actor", required=True, help="操作人")
+    p_win_create.set_defaults(func=cmd_window_profile_create)
+
+    p_win_list = window_sub.add_parser("list", help="列出所有窗口模板")
+    p_win_list.add_argument("--include-inactive", action="store_true", help="包含已删除的模板")
+    p_win_list.set_defaults(func=cmd_window_profile_list)
+
+    p_win_show = window_sub.add_parser("show", help="查看模板详情、应用记录和审计日志")
+    p_win_show.add_argument("name", help="模板名称")
+    p_win_show.add_argument("--show-log", action="store_true", help="显示审计日志")
+    p_win_show.add_argument("--log-limit", type=int, default=20, help="审计日志显示条数")
+    p_win_show.set_defaults(func=cmd_window_profile_show)
+
+    p_win_apply = window_sub.add_parser("apply", help="将模板应用到指定批次")
+    p_win_apply.add_argument("name", help="模板名称")
+    p_win_apply.add_argument("backup_dir", help="备份包目录")
+    p_win_apply.add_argument("--batch-id", help="指定批次 ID")
+    p_win_apply.add_argument("--actor", required=True, help="操作人")
+    p_win_apply.add_argument("--expected-fingerprint", help="期望的模板指纹（用于检测模板是否被修改）")
+    p_win_apply.add_argument("--force", action="store_true", help="即使模板被修改也强制应用")
+    p_win_apply.set_defaults(func=cmd_window_profile_apply)
+
+    p_win_export = window_sub.add_parser("export", help="导出窗口模板到 JSON 文件")
+    p_win_export.add_argument("output", help="输出文件路径 (.json)")
+    p_win_export.add_argument("--name", action="append", help="指定要导出的模板名称，可多次指定；不指定则导出全部")
+    p_win_export.add_argument("--actor", required=True, help="操作人")
+    p_win_export.set_defaults(func=cmd_window_profile_export)
+
+    p_win_import = window_sub.add_parser("import", help="从 JSON 文件导入窗口模板")
+    p_win_import.add_argument("input", help="输入文件路径 (.json)")
+    p_win_import.add_argument("--actor", required=True, help="操作人")
+    p_win_import.add_argument("--mode", choices=["merge", "replace"], default="merge", help="导入模式: merge(默认)=合并跳过已存在, replace=替换已存在（需 --force）")
+    p_win_import.add_argument("--force", action="store_true", help="replace 模式下强制更新已存在的模板")
+    p_win_import.set_defaults(func=cmd_window_profile_import)
+
     return parser
+
+
+def _preprocess_argv(argv: List[str]) -> List[str]:
+    import re
+    tz_pattern = re.compile(r"^[+-]\d{2}:\d{2}$")
+    result = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--timezone",) and i + 1 < len(argv):
+            next_arg = argv[i + 1]
+            if tz_pattern.match(next_arg) or next_arg in ("UTC", "Z"):
+                result.append(f"{arg}={next_arg}")
+                i += 2
+                continue
+        result.append(arg)
+        i += 1
+    return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = _preprocess_argv(argv)
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -1700,6 +2022,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     if getattr(args, "waiver_command", None) == "snapshot" and not getattr(args, "snapshot_command", None):
         parser._subparsers._group_actions[0].choices["waiver"]._subparsers._group_actions[0].choices["snapshot"].print_help()
+        return 1
+    if args.command == "window" and not getattr(args, "window_command", None):
+        parser._subparsers._group_actions[0].choices["window"].print_help()
         return 1
     return args.func(args)
 

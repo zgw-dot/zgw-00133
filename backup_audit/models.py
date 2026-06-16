@@ -50,6 +50,7 @@ class OperationType(str, Enum):
     EXPORT = "export"
     WAIVER_APPLY = "waiver_apply"
     WAIVER_RESCAN = "waiver_rescan"
+    WINDOW_PROFILE_APPLY = "window_profile_apply"
 
 
 @dataclass
@@ -301,6 +302,8 @@ class AuditBatch:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     storage_path: Optional[str] = None
+    window_profile_snapshot: Optional[Dict[str, Any]] = None
+    window_profile_ref: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -317,6 +320,8 @@ class AuditBatch:
             "operation_log": [l.to_dict() for l in self.operation_log],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "window_profile_snapshot": self.window_profile_snapshot,
+            "window_profile_ref": self.window_profile_ref,
         }
 
     @classmethod
@@ -335,6 +340,8 @@ class AuditBatch:
             operation_log=[OperationLogEntry.from_dict(l) for l in data.get("operation_log", [])],
             created_at=data["created_at"],
             updated_at=data["updated_at"],
+            window_profile_snapshot=data.get("window_profile_snapshot"),
+            window_profile_ref=data.get("window_profile_ref"),
         )
 
     def save(self, storage_dir: str) -> str:
@@ -505,3 +512,33 @@ class AuditBatch:
                 "reopen_count": len(self.reopen_records),
             },
         )
+
+    def apply_window_profile_snapshot(self, snapshot: Dict[str, Any], profile_name: str) -> None:
+        self.window_profile_snapshot = snapshot
+        self.window_profile_ref = profile_name
+        self.manifest.backup_window.start = snapshot["window_start"]
+        self.manifest.backup_window.end = snapshot["window_end"]
+        self.manifest.valid_business_lines = list(snapshot.get("business_lines", []))
+        self.log_operation(
+            action=OperationType.WINDOW_PROFILE_APPLY,
+            actor=snapshot.get("applied_by", "system"),
+            detail={
+                "profile_name": snapshot.get("profile_name"),
+                "profile_version": snapshot.get("profile_version"),
+                "profile_fingerprint": snapshot.get("profile_fingerprint"),
+                "timezone": snapshot.get("timezone"),
+            },
+        )
+
+    def get_window_profile_info(self) -> Optional[Dict[str, Any]]:
+        if not self.window_profile_snapshot:
+            return None
+        return {
+            "profile_name": self.window_profile_snapshot.get("profile_name"),
+            "profile_version": self.window_profile_snapshot.get("profile_version"),
+            "applied_at": self.window_profile_snapshot.get("applied_at"),
+            "applied_by": self.window_profile_snapshot.get("applied_by"),
+            "timezone": self.window_profile_snapshot.get("timezone"),
+            "notes": self.window_profile_snapshot.get("notes"),
+            "fingerprint": self.window_profile_snapshot.get("profile_fingerprint"),
+        }

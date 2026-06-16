@@ -82,6 +82,8 @@ def export_json_report(batch: AuditBatch, output_path: str) -> str:
         "created_at": batch.created_at,
         "generated_at": batch.updated_at,
         "status": batch.status.value,
+        "window_profile": batch.window_profile_snapshot,
+        "window_profile_ref": batch.window_profile_ref,
         "summary": {
             "total_issues": len(batch.issues),
             "by_severity": {
@@ -135,6 +137,18 @@ def export_csv_report(batch: AuditBatch, output_path: str) -> str:
         writer.writerow(["创建时间", batch.created_at])
         writer.writerow(["报告时间", batch.updated_at])
         writer.writerow([])
+
+        wp_info = batch.get_window_profile_info()
+        if wp_info:
+            writer.writerow(["--- 窗口模板 ---"])
+            writer.writerow(["模板名称", wp_info['profile_name']])
+            writer.writerow(["模板版本", f"v{wp_info['profile_version']}"])
+            writer.writerow(["应用人", wp_info['applied_by']])
+            writer.writerow(["应用时间", wp_info['applied_at']])
+            writer.writerow(["时区", wp_info['timezone']])
+            if wp_info['notes']:
+                writer.writerow(["备注", wp_info['notes']])
+            writer.writerow([])
 
         if batch.signoff:
             writer.writerow(["--- 签收摘要 ---"])
@@ -263,6 +277,16 @@ def print_summary(batch: AuditBatch) -> None:
 
     print(f"\n批次 ID: {batch.id}")
     print(f"批次状态: {batch.status.value}")
+
+    wp_info = batch.get_window_profile_info()
+    if wp_info:
+        print(f"窗口模板: {wp_info['profile_name']} (v{wp_info['profile_version']})")
+        print(f"  应用人: {wp_info['applied_by']}")
+        print(f"  应用时间: {wp_info['applied_at']}")
+        print(f"  时区: {wp_info['timezone']}")
+        if wp_info['notes']:
+            print(f"  备注: {wp_info['notes']}")
+
     if batch.signoff:
         print(f"签收状态: {'强制放行' if batch.signoff.forced else '正常签收'}")
         print(f"签收人: {batch.signoff.signer}")
