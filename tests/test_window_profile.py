@@ -851,5 +851,575 @@ class TestWindowProfileAuditLog(unittest.TestCase):
         self.assertIn("creator", r.stdout)
 
 
+class TestWindowProfileNoEffectWithoutExplicit(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_noeff_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "good.dat", "content": b"good content"},
+            ],
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_import_without_profile_no_window_config(self):
+        r = run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        r = run_cli(
+            "resume", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("窗口模板", r.stdout)
+        self.assertNotIn("时区", r.stdout)
+
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        for f in os.listdir(state_dir):
+            if f.startswith("batch_") and f.endswith(".json"):
+                with open(os.path.join(state_dir, f), "r", encoding="utf-8") as fp:
+                    batch_data = json.load(fp)
+                self.assertIsNone(batch_data.get("window_profile_snapshot"))
+                self.assertIsNone(batch_data.get("window_profile_ref"))
+                return
+        self.fail("batch file not found")
+
+    def test_export_without_profile_no_window_section(self):
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            env_overrides=self.env,
+        )
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        self.assertTrue(os.path.exists(json_path))
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertIsNone(report.get("window_profile"))
+
+
+class TestWindowProfileBusinessLineValidation(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_blval_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "good.dat", "content": b"good content"},
+            ],
+            valid_bl=["order_system"],
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_apply_profile_with_incompatible_business_lines_fails(self):
+        run_cli(
+            "window", "create", "bad_bl",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "nonexistent_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "window", "apply", "bad_bl",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("业务线与批次不兼容", r.stderr)
+
+    def test_apply_profile_with_compatible_business_lines_succeeds(self):
+        run_cli(
+            "window", "create", "good_bl",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "window", "apply", "good_bl",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"apply should succeed: {r.stderr}")
+
+    def test_import_with_profile_incompatible_bl_fails(self):
+        now = datetime.now()
+        backup_dir2 = os.path.join(self.tmp_dir, "backup2")
+        os.makedirs(backup_dir2)
+        make_temp_backup(
+            backup_dir2,
+            [
+                {"name": "file.dat", "content": b"content"},
+            ],
+            valid_bl=["order_system"],
+        )
+
+        run_cli(
+            "window", "create", "import_bad_bl",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "+08:00",
+            "--business-line", "unknown_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "import",
+            os.path.join(backup_dir2, "manifest.json"),
+            backup_dir2,
+            "--window-profile", "import_bad_bl",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "incompatible BL should fail")
+
+
+class TestWindowProfileImportConflictBlocking(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_conflict2_")
+        self.env1 = make_isolated_config(os.path.join(self.tmp_dir, "config1"))
+        self.env2 = make_isolated_config(os.path.join(self.tmp_dir, "config2"))
+
+        now = datetime.now()
+        self.start = (now - timedelta(hours=2)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_replace_without_force_skips_existing(self):
+        run_cli(
+            "window", "create", "conflict_prof",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "源版本",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "conflict_prof.json")
+        run_cli(
+            "window", "export", export_path,
+            "--name", "conflict_prof",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        run_cli(
+            "window", "create", "conflict_prof",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+09:00",
+            "--business-line", "other_system",
+            "--notes", "目标版本",
+            "--actor", "admin",
+            env_overrides=self.env2,
+        )
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--mode", "replace",
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("已存在", r.stdout)
+        self.assertIn("--force", r.stdout)
+
+        r = run_cli("window", "show", "conflict_prof", env_overrides=self.env2)
+        self.assertIn("+09:00", r.stdout)
+        self.assertIn("目标版本", r.stdout)
+
+    def test_import_invalid_profile_in_bundle_reports_conflict(self):
+        run_cli(
+            "window", "create", "valid_prof",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "mixed_profiles.json")
+        run_cli(
+            "window", "export", export_path,
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["profiles"].append({
+            "name": "bad_tz_prof",
+            "window_start": self.start,
+            "window_end": self.end,
+            "timezone": "INVALID_TZ",
+            "business_lines": ["order_system"],
+            "notes": "",
+            "actor": "admin",
+        })
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("冲突", r.stdout)
+        self.assertIn("bad_tz_prof", r.stdout)
+
+
+class TestWindowProfileCrossProcessFull(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_crossfull_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "cross_full",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "跨进程完整测试",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "file1.dat", "content": b"content1"},
+                {"name": "file2.dat", "content": b"content2"},
+            ],
+            valid_bl=["order_system"],
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "cross_full",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+
+        run_cli(
+            "precheck", self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_cross_process_resume_shows_full_info(self):
+        r = run_cli(
+            "resume", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("cross_full", r.stdout)
+        self.assertIn("+08:00", r.stdout)
+        self.assertIn("跨进程完整测试", r.stdout)
+        self.assertIn("ops", r.stdout)
+
+    def test_cross_process_list_shows_profile_info(self):
+        r = run_cli(
+            "list", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("cross_full", r.stdout)
+
+    def test_cross_process_export_preserves_profile(self):
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            env_overrides=self.env,
+        )
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        self.assertTrue(os.path.exists(json_path))
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertIsNotNone(report.get("window_profile"))
+        self.assertEqual(report["window_profile"]["profile_name"], "cross_full")
+        self.assertEqual(report["window_profile"]["timezone"], "+08:00")
+        self.assertEqual(report["window_profile"]["notes"], "跨进程完整测试")
+        self.assertEqual(report["window_profile"]["applied_by"], "ops")
+
+    def test_cross_process_show_profile_with_applications(self):
+        r = run_cli(
+            "window", "show", "cross_full",
+            "--show-log",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("cross_full", r.stdout)
+        self.assertIn("应用记录", r.stdout)
+        self.assertIn("TEST-001", r.stdout)
+        self.assertIn("模板审计日志", r.stdout)
+        self.assertIn("创建", r.stdout)
+        self.assertIn("应用", r.stdout)
+
+
+class TestWindowProfileJsonRoundtrip(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_roundtrip_")
+        self.env1 = make_isolated_config(os.path.join(self.tmp_dir, "cfg1"))
+        self.env2 = make_isolated_config(os.path.join(self.tmp_dir, "cfg2"))
+        now = datetime.now()
+        self.start = (now - timedelta(hours=8)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_json_export_import_preserves_all_fields(self):
+        run_cli(
+            "window", "create", "roundtrip_prof",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "-05:00",
+            "--business-line", "order_system",
+            "--business-line", "hr_system",
+            "--notes", "全字段导出导入测试",
+            "--actor", "creator",
+            env_overrides=self.env1,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "roundtrip.json")
+        r = run_cli(
+            "window", "export", export_path,
+            "--name", "roundtrip_prof",
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+        self.assertEqual(r.returncode, 0, f"export failed: {r.stderr}")
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            exported = json.load(f)
+        self.assertEqual(len(exported["profiles"]), 1)
+        p = exported["profiles"][0]
+        self.assertEqual(p["name"], "roundtrip_prof")
+        self.assertEqual(p["timezone"], "-05:00")
+        self.assertEqual(p["business_lines"], ["order_system", "hr_system"])
+        self.assertEqual(p["notes"], "全字段导出导入测试")
+
+        r = run_cli(
+            "window", "import", export_path,
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+        self.assertEqual(r.returncode, 0, f"import failed: {r.stderr}")
+
+        r = run_cli("window", "show", "roundtrip_prof", env_overrides=self.env2)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("roundtrip_prof", r.stdout)
+        self.assertIn("-05:00", r.stdout)
+        self.assertIn("order_system", r.stdout)
+        self.assertIn("hr_system", r.stdout)
+        self.assertIn("全字段导出导入测试", r.stdout)
+
+    def test_export_all_profiles_and_import_to_clean_env(self):
+        profiles = [
+            ("p1", "+08:00", ["bl_a"], "备注1"),
+            ("p2", "UTC", ["bl_b", "bl_c"], "备注2"),
+        ]
+        for name, tz, bls, notes in profiles:
+            args = [
+                "window", "create", name,
+                "--window-start", self.start,
+                "--window-end", self.end,
+                "--timezone", tz,
+                "--actor", "admin",
+                "--notes", notes,
+            ]
+            for bl in bls:
+                args.extend(["--business-line", bl])
+            r = run_cli(*args, env_overrides=self.env1)
+            self.assertEqual(r.returncode, 0, f"create {name} failed: {r.stderr}")
+
+        export_path = os.path.join(self.tmp_dir, "all_profiles.json")
+        run_cli(
+            "window", "export", export_path,
+            "--actor", "admin",
+            env_overrides=self.env1,
+        )
+
+        run_cli(
+            "window", "import", export_path,
+            "--actor", "importer",
+            env_overrides=self.env2,
+        )
+
+        r = run_cli("window", "list", env_overrides=self.env2)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("2 个", r.stdout)
+        for name, tz, bls, notes in profiles:
+            self.assertIn(name, r.stdout)
+
+
+class TestWindowProfileAuditLogQuery(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_logq_")
+        self.env = make_isolated_config(self.tmp_dir)
+        now = datetime.now()
+        self.start = (now - timedelta(hours=2)).isoformat()
+        self.end = now.isoformat()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_show_log_captures_create_apply_update(self):
+        run_cli(
+            "window", "create", "logquery",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "creator",
+            env_overrides=self.env,
+        )
+
+        backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(backup_dir, exist_ok=True)
+        make_temp_backup(
+            backup_dir,
+            [{"name": "test.dat", "content": b"test"}],
+            valid_bl=["order_system"],
+        )
+        run_cli(
+            "import",
+            os.path.join(backup_dir, "manifest.json"),
+            backup_dir,
+            env_overrides=self.env,
+        )
+        run_cli(
+            "window", "apply", "logquery",
+            backup_dir,
+            "--actor", "applier",
+            env_overrides=self.env,
+        )
+
+        import backup_audit.window_profile as _wp
+        _os_environ_backup = os.environ.copy()
+        os.environ.update(self.env)
+        store = _wp.WindowProfileStore()
+        store.update_profile(
+            name="logquery",
+            actor="updater",
+            timezone="+09:00",
+            business_lines=["order_system", "payment_system"],
+            notes="updated",
+        )
+        os.environ.clear()
+        os.environ.update(_os_environ_backup)
+
+        r = run_cli(
+            "window", "show", "logquery",
+            "--show-log",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("模板审计日志", r.stdout)
+        self.assertIn("创建", r.stdout)
+        self.assertIn("应用", r.stdout)
+        self.assertIn("更新", r.stdout)
+        self.assertIn("creator", r.stdout)
+        self.assertIn("applier", r.stdout)
+        self.assertIn("updater", r.stdout)
+
+    def test_export_import_logged_in_audit(self):
+        run_cli(
+            "window", "create", "logie",
+            "--window-start", self.start,
+            "--window-end", self.end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "logie.json")
+        run_cli(
+            "window", "export", export_path,
+            "--name", "logie",
+            "--actor", "exporter",
+            env_overrides=self.env,
+        )
+
+        r = run_cli(
+            "window", "show", "logie",
+            "--show-log",
+            env_overrides=self.env,
+        )
+        self.assertIn("导出", r.stdout)
+        self.assertIn("exporter", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

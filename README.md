@@ -897,7 +897,7 @@ python -m pytest tests/ -v
 | `TestForcedSignoff` | 强制放行成功、只读拦截 precheck/review/undo/重复 finalize |
 | `TestReopenWorkflow` | 参数校验、恢复编辑、重开记录持久化、重开开放批次拒绝、重新签收 |
 
-### 窗口模板专项测试（test_window_profile.py，23 个用例）
+### 窗口模板专项测试（test_window_profile.py，38 个用例）
 
 | 测试类 | 覆盖场景 |
 |--------|---------|
@@ -909,6 +909,12 @@ python -m pytest tests/ -v
 | `TestWindowProfileImportExport` | 导出导入全量对账、merge 模式跳过已存在、replace 模式强制更新 |
 | `TestWindowProfileSnapshotImmutability` | 模板修改后旧批次保留 v1 快照、新批次使用 v2 版本、导出报告包含正确快照 |
 | `TestWindowProfileAuditLog` | 审计日志记录创建、应用、修改、删除等操作 |
+| `TestWindowProfileNoEffectWithoutExplicit` | 不传 --window-profile 时批次不包含窗口配置、导出报告无 window_profile 字段 |
+| `TestWindowProfileBusinessLineValidation` | 模板业务线与批次不兼容时拒绝应用、兼容时成功、import 时 BL 校验失败 |
+| `TestWindowProfileImportConflictBlocking` | replace 模式不带 --force 跳过已存在并提示 --force、导入包含无效模板的 bundle 报告冲突 |
+| `TestWindowProfileCrossProcessFull` | 跨进程 resume/list/export 完整保留模板信息、window show 含应用记录和审计日志 |
+| `TestWindowProfileJsonRoundtrip` | JSON 导出再导回保留全字段、多模板批量导出到干净环境 |
+| `TestWindowProfileAuditLogQuery` | window show --show-log 查询创建/应用/更新/导出日志、导出操作记录审计日志 |
 | `TestCleanSignoff` | 无阻断批次正常签收 |
 | `TestCrossProcessSignoff` | 跨进程 resume/list 显示签收状态、export 包含签收摘要和日志、reopen 历史保留 |
 | `TestListSeverityFilter` | blocking/confirmable 筛选正确、组合筛选、帮助说明一致 |
@@ -945,7 +951,7 @@ backup_audit/
 backup_audit_cli.py        # 可执行入口
 tests/
   test_regression.py     # 回归测试（10个测试类，35个测试用例）
-  test_window_profile.py  # 窗口模板专项测试（8个测试类，23个测试用例）
+  test_window_profile.py  # 窗口模板专项测试（14个测试类，38个测试用例）
   test_waiver.py           # 豁免规则专项测试
 generate_samples.py        # 生成样例备份数据（含各种异常场景）
 ```
@@ -999,7 +1005,8 @@ python backup_audit_cli.py waiver rollback --actor ops_zhang --yes
 |------|------|------|
 | input | ✅ | 导入文件路径（JSON 格式） |
 | --actor | ✅ | 操作人 |
-| --mode | ❌ | 导入模式：merge(默认) 或 eplace |
+| --mode | ❌ | 导入模式：merge(默认) 或 
+eplace |
 | --dry-run | ❌ | 仅预演，不实际修改规则 |
 | --replace-confirm-manual-delete | ❌ | replace 模式下确认删除所有手工规则 |
 
@@ -1055,7 +1062,8 @@ python backup_audit_cli.py waiver rollback --actor ops_zhang --yes
 **回滚特性：**
 - ✅ 只回滚最近一次导入事务
 - ✅ 保留导入后手工添加的规则
-- ✅ 事务状态更新为 olled_back（可追溯）
+- ✅ 事务状态更新为 
+olled_back（可追溯）
 - ✅ 跨重启后仍可回滚
 
 #### waiver transactions — 查看导入事务历史

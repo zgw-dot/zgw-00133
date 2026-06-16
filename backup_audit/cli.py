@@ -327,6 +327,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                 batch_id=batch.id,
                 backup_dir=backup_dir,
                 actor=actor,
+                valid_business_lines=manifest.valid_business_lines,
             )
             batch.apply_window_profile_snapshot(snapshot.to_dict(), profile_name)
             save_batch(batch, backup_dir)
@@ -1597,6 +1598,7 @@ def cmd_window_profile_apply(args: argparse.Namespace) -> int:
             actor=args.actor,
             expected_fingerprint=args.expected_fingerprint,
             force=args.force,
+            valid_business_lines=batch.manifest.valid_business_lines,
         )
     except WindowProfileNotFoundError as e:
         print(f"错误: {e}", file=sys.stderr)

@@ -571,6 +571,7 @@ class WindowProfileStore:
         actor: str,
         expected_fingerprint: Optional[str] = None,
         force: bool = False,
+        valid_business_lines: Optional[List[str]] = None,
     ) -> WindowProfileSnapshot:
         if not actor or not actor.strip():
             raise WindowProfileValidationError("必须指定操作人 actor")
@@ -586,6 +587,13 @@ class WindowProfileStore:
             self.check_profile_modified(profile, expected_fingerprint)
 
         self.check_already_applied(profile_name, batch_id)
+
+        if valid_business_lines is not None:
+            ok, msg = validate_business_lines(profile.business_lines, valid_business_lines)
+            if not ok:
+                raise WindowProfileValidationError(
+                    f"模板 '{profile_name}' 的业务线与批次不兼容: {msg}"
+                )
 
         snapshot = WindowProfileSnapshot(
             profile_name=profile.name,
@@ -679,15 +687,30 @@ class WindowProfileStore:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(bundle.to_dict(), f, ensure_ascii=False, indent=2)
 
-        self._log_operation(
-            action=WindowProfileAction.EXPORT,
-            actor=actor,
-            detail={
-                "output_path": output_path,
-                "exported_count": len(profiles),
-                "exported_names": [p.name for p in profiles],
-            },
-        )
+        if profile_names:
+            for pn in profile_names:
+                self._log_operation(
+                    action=WindowProfileAction.EXPORT,
+                    actor=actor,
+                    profile_name=pn,
+                    detail={
+                        "output_path": output_path,
+                        "exported_count": len(profiles),
+                        "exported_names": [p.name for p in profiles],
+                    },
+                )
+        else:
+            for p in profiles:
+                self._log_operation(
+                    action=WindowProfileAction.EXPORT,
+                    actor=actor,
+                    profile_name=p.name,
+                    detail={
+                        "output_path": output_path,
+                        "exported_count": len(profiles),
+                        "exported_names": [p.name for p in profiles],
+                    },
+                )
         self._save()
         return bundle
 
