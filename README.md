@@ -633,3 +633,214 @@ tests/
   test_readme_doc.py   # README 文档完整性回归检查
 generate_samples.py    # 生成样例备份数据（含各种异常场景）
 ```
+backup_audit_cli.py    # 可执行入口
+tests/
+  test_regression.py   # 回归测试（10个测试类，35个测试用例）
+  test_waiver.py       # 豁免规则专项测试
+generate_samples.py    # 生成样例备份数据（含各种异常场景）
+`
+
+## 豁免规则管理
+
+### 概述
+
+豁免规则用于在验收过程中忽略已知的、可接受的问题。每条规则可按路径前缀、业务线、问题类型、严重程度等维度进行匹配。
+
+**规则来源标记**：
+- manual（手工）：通过 waiver add 命令添加的规则
+- atch_import（批量导入）：通过 waiver import 命令导入的规则
+
+回滚机制只会移除 atch_import 来源的规则，不会误伤手工添加的规则。
+
+### 批量导入安全流程
+
+为确保批量导入的安全性，导入流程采用 **"预演 → 确认 → 导入 → 可回滚"** 的四步安全机制：
+
+`
+1. 预演 (--dry-run)
+   ↓
+2. 检查预演结果（新增/冲突/已存在/已过期数量）
+   ↓
+3. 确认执行导入（自动创建可追溯事务）
+   ↓
+4. 如需回滚，执行 rollback（只影响本次导入的规则）
+`
+
+### 命令详解
+
+#### waiver import — 批量导入豁免规则
+
+**推荐工作流：**
+
+`ash
+# 第一步：预演导入，查看结果但不修改任何规则
+python backup_audit_cli.py waiver import rules.json --actor ops_zhang --dry-run
+
+# 第二步：确认预演结果无误后，实际执行导入
+python backup_audit_cli.py waiver import rules.json --actor ops_zhang
+
+# 第三步：如需回滚，执行回滚命令
+python backup_audit_cli.py waiver rollback --actor ops_zhang --yes
+`
+
+**参数说明：**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| input | ✅ | 导入文件路径（JSON 格式） |
+| --actor | ✅ | 操作人 |
+| --mode | ❌ | 导入模式：merge(默认) 或 eplace |
+| --dry-run | ❌ | 仅预演，不实际修改规则 |
+| --replace-confirm-manual-delete | ❌ | replace 模式下确认删除所有手工规则 |
+
+**预演结果输出示例：**
+
+`
+=== 导入预演结果 ===
+  源文件: /path/to/rules.json
+  导入模式: merge
+  文件中规则总数: 5
+
+  新增规则: 2
+    + a1b2c3d4e5f6: 遗留系统路径前缀豁免 (路径=data/legacy/)
+    + b2c3d4e5f6a7: 支付系统校验和豁免 (业务线=payment_system, 类型=bad_checksum)
+
+  已存在 (跳过): 1
+    = c3d4e5f6a7b8: 已存在的规则
+
+  冲突/风险 (跳过): 1
+    ! d4e5f6a7b8c9: 与规则 c3d4e5f6a7b8 存在范围重叠
+
+  已过期 (跳过): 1
+    e e5f6a7b8c9d0: 过期于 2024-01-01T00:00:00
+
+  无效规则: 0
+
+  ✅ 预演通过，可以执行导入。
+`
+
+**replace 模式保护：**
+
+当使用 --mode replace 时，如果当前存在手工创建的规则，系统会拒绝导入以防止误删：
+
+`ash
+# 有手工规则时会被拒绝
+python backup_audit_cli.py waiver import rules.json --actor ops_zhang --mode replace
+# 错误: replace 模式下检测到 3 条手工创建的规则...
+
+# 确认删除手工规则后才能执行
+python backup_audit_cli.py waiver import rules.json --actor ops_zhang --mode replace --replace-confirm-manual-delete
+`
+
+#### waiver rollback — 回滚最近一次导入
+
+`ash
+# 查看回滚预览（不带 --yes）
+python backup_audit_cli.py waiver rollback --actor ops_zhang
+
+# 确认执行回滚
+python backup_audit_cli.py waiver rollback --actor ops_zhang --yes
+`
+
+**回滚特性：**
+- ✅ 只回滚最近一次导入事务
+- ✅ 保留导入后手工添加的规则
+- ✅ 事务状态更新为 olled_back（可追溯）
+- ✅ 跨重启后仍可回滚
+
+#### waiver transactions — 查看导入事务历史
+
+`ash
+# 查看最近 10 条事务
+python backup_audit_cli.py waiver transactions
+
+# 查看最近 5 条事务
+python backup_audit_cli.py waiver transactions --limit 5
+`
+
+**输出示例：**
+
+`
+=== 导入事务历史 (最近 3 条) ===
+↩️ [2026-06-16T10:30:00] TX-20260616103000-abc12345
+    状态: rolled_back
+    操作人: ops_zhang
+    模式: merge
+    源文件: /path/to/rules.json
+    导入规则数: 2
+    回滚移除: 2 条
+
+✅ [2026-06-16T10:25:00] TX-20260616102500-def67890
+    状态: committed
+    操作人: ops_li
+    模式: merge
+    源文件: /path/to/other_rules.json
+    导入规则数: 3
+`
+
+#### waiver list — 查看豁免规则
+
+`ash
+# 查看生效规则
+python backup_audit_cli.py waiver list
+
+# 包含已过期规则
+python backup_audit_cli.py waiver list --include-expired
+
+# 同时显示操作日志（含来源和动作）
+python backup_audit_cli.py waiver list --show-log
+`
+
+**输出示例（含来源标记）：**
+
+`
+当前生效规则: 3
+全局配置目录: /home/user/.backup_audit_config
+
+  [a1b2c3d4e5f6] [手工]
+    操作人: ops_zhang
+    创建时间: 2026-06-16T10:00:00
+    来源: manual
+    匹配条件: 路径前缀=data/legacy/
+    理由: 遗留系统已知问题
+
+  [b2c3d4e5f6a7] [批量导入]
+    操作人: ops_li
+    创建时间: 2026-06-16T10:25:00
+    来源: batch_import
+    事务ID: TX-20260616102500-def67890
+    匹配条件: 业务线=payment_system, 类型=bad_checksum
+    理由: 支付系统历史校验和允许
+`
+
+#### waiver export — 导出豁免规则
+
+`ash
+python backup_audit_cli.py waiver export waivers_backup.json --actor ops_zhang
+`
+
+导出的 JSON 文件包含每条规则的完整信息，包括 source（来源）和 	ransaction_id（事务ID），便于追溯。
+
+### 数据持久化
+
+所有状态均持久化到配置目录，跨进程/重启后保持一致：
+
+| 文件 | 内容 |
+|------|------|
+| waiver_rules.json | 豁免规则列表 |
+| waiver_audit_log.json | 所有操作的审计日志 |
+| waiver_transactions.json | 导入事务记录（用于回滚） |
+
+### 退出码约定（豁免规则相关）
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 成功 |
+| 16 | 导入文件校验失败 |
+| 17 | 导入文件格式无效 |
+| 20 | 预演执行失败 |
+| 21 | 预演未通过（存在错误） |
+| 22 | 事务操作失败（如 replace 模式未确认） |
+| 23 | 无可回滚的导入事务 |
+| 24 | 回滚未确认（缺少 --yes） |
+| 25 | 回滚执行失败 |

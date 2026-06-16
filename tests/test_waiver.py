@@ -11,6 +11,9 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from backup_audit.waiver import WaiverStore
+
 
 CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backup_audit_cli.py")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -439,6 +442,7 @@ class TestWaiverExportImport(WaiverTestBase):
             "waiver", "import", export_path,
             "--actor", "replacer",
             "--mode", "replace",
+            "--replace-confirm-manual-delete",
             extra_env=self.extra_env,
         )
         self.assertEqual(r.returncode, 0, f"import replace failed: {r.stderr}")
@@ -981,6 +985,787 @@ class TestSignedOffWaiverLockin(WaiverTestBase):
 
         self.assertEqual(waived_after, waived_before, "跨重启后已签收批次的豁免数应保持不变")
         self.assertEqual(blocking_after, blocking_before, "跨重启后已签收批次的活跃阻断数应保持不变")
+
+
+class TestWaiverImportDryRun(WaiverTestBase):
+    def test_dry_run_shows_new_rules(self):
+        export_path = os.path.join(self.tmp_dir, "dry_run_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "dryrun1",
+                    "path_prefix": "data/new1/",
+                    "reason": "预演测试规则1",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+                {
+                    "id": "dryrun2",
+                    "path_prefix": "data/new2/",
+                    "reason": "预演测试规则2",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"dry run should succeed: {r.stderr}")
+        self.assertIn("新增规则: 2", r.stdout)
+        self.assertIn("预演通过，可以执行导入", r.stdout)
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 0, "dry run 不应实际添加规则")
+
+    def test_dry_run_detects_conflicts(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "tester",
+            "--reason", "已存在的冲突规则",
+            "--path-prefix", "data/conflict/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "conflict_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "conflict_rule",
+                    "path_prefix": "data/conflict/sub/",
+                    "reason": "冲突测试规则",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("冲突/风险 (跳过): 1", r.stdout)
+        self.assertIn("存在范围重叠", r.stdout)
+
+    def test_dry_run_detects_expired_rules(self):
+        past = (datetime.now() - timedelta(days=1)).isoformat()
+        export_path = os.path.join(self.tmp_dir, "expired_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "expired_rule",
+                    "path_prefix": "data/expired/",
+                    "reason": "已过期规则",
+                    "actor": "tester",
+                    "created_at": "2026-01-01T00:00:00",
+                    "expires_at": past,
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("已过期 (跳过): 1", r.stdout)
+
+    def test_dry_run_detects_invalid_file(self):
+        bad_path = os.path.join(self.tmp_dir, "bad.json")
+        with open(bad_path, "w", encoding="utf-8") as f:
+            f.write("{invalid json}")
+
+        r = run_cli(
+            "waiver", "import", bad_path,
+            "--actor", "tester",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("文件错误", r.stdout)
+
+
+class TestWaiverImportValidation(WaiverTestBase):
+    def test_invalid_json_blocks_import(self):
+        bad_path = os.path.join(self.tmp_dir, "bad_import.json")
+        with open(bad_path, "w", encoding="utf-8") as f:
+            f.write("not a json")
+
+        r = run_cli(
+            "waiver", "import", bad_path,
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "无效JSON应被拦截")
+        self.assertIn("校验失败", r.stderr)
+
+    def test_missing_reason_blocks_import(self):
+        bad_path = os.path.join(self.tmp_dir, "no_reason.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "bad_rule",
+                    "path_prefix": "data/bad/",
+                    "reason": "",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(bad_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", bad_path,
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "缺少reason应被拦截")
+        self.assertIn("校验失败", r.stderr)
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 0, "坏数据不应写入配置")
+
+    def test_invalid_issue_type_blocks_import(self):
+        bad_path = os.path.join(self.tmp_dir, "bad_type.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "bad_type",
+                    "path_prefix": "data/bad/",
+                    "reason": "测试规则",
+                    "actor": "tester",
+                    "issue_type": "invalid_type",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(bad_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", bad_path,
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "无效issue_type应被拦截")
+
+
+class TestWaiverTransactionAndRollback(WaiverTestBase):
+    def test_import_creates_transaction(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "手工规则",
+            "--path-prefix", "data/manual/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "tx_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "txrule1",
+                    "path_prefix": "data/tx1/",
+                    "reason": "事务测试规则1",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+                {
+                    "id": "txrule2",
+                    "path_prefix": "data/tx2/",
+                    "reason": "事务测试规则2",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"import failed: {r.stderr}")
+        self.assertIn("事务ID: TX-", r.stdout)
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 3)
+
+        manual_rule = [r for r in rules["rules"] if r["source"] == "manual"]
+        self.assertEqual(len(manual_rule), 1)
+
+        batch_rules = [r for r in rules["rules"] if r["source"] == "batch_import"]
+        self.assertEqual(len(batch_rules), 2)
+        for br in batch_rules:
+            self.assertIsNotNone(br.get("transaction_id"))
+
+    def test_rollback_preserves_manual_rules(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "手工规则应保留",
+            "--path-prefix", "data/manual_keep/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "rollback_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "rollback_rule",
+                    "path_prefix": "data/rollback/",
+                    "reason": "将被回滚的规则",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        rules_before = self._read_waiver_rules()
+        self.assertEqual(len(rules_before["rules"]), 2)
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"rollback failed: {r.stderr}")
+        self.assertIn("保留手工规则数: 1", r.stdout)
+        self.assertIn("移除导入规则数: 1", r.stdout)
+
+        rules_after = self._read_waiver_rules()
+        self.assertEqual(len(rules_after["rules"]), 1)
+        self.assertEqual(rules_after["rules"][0]["path_prefix"], "data/manual_keep/")
+        self.assertEqual(rules_after["rules"][0]["source"], "manual")
+
+    def test_rollback_requires_confirmation(self):
+        export_path = os.path.join(self.tmp_dir, "noconfirm_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "noconfirm",
+                    "path_prefix": "data/noconfirm/",
+                    "reason": "测试规则",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "缺少--yes应被拒绝")
+        self.assertIn("--yes", r.stdout)
+
+    def test_no_transaction_rollback_fails(self):
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "无事务时回滚应失败")
+        self.assertIn("没有可回滚", r.stderr)
+
+    def test_transactions_list_shows_history(self):
+        export_path = os.path.join(self.tmp_dir, "tx_list.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "txlist",
+                    "path_prefix": "data/txlist/",
+                    "reason": "事务列表测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("导入事务历史", r.stdout)
+        self.assertIn("committed", r.stdout)
+        self.assertIn("importer", r.stdout)
+
+
+class TestWaiverReplaceModeProtection(WaiverTestBase):
+    def test_replace_blocks_when_manual_rules_exist(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "手工规则",
+            "--path-prefix", "data/manual/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "replace_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "replace_rule",
+                    "path_prefix": "data/replace/",
+                    "reason": "替换模式测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "replacer",
+            "--mode", "replace",
+            extra_env=self.extra_env,
+        )
+        self.assertNotEqual(r.returncode, 0, "有手工规则时replace应被拒绝")
+        self.assertIn("--replace-confirm-manual-delete", r.stderr)
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 1, "手工规则应保留")
+
+    def test_replace_with_confirm_succeeds(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "将被替换的手工规则",
+            "--path-prefix", "data/to_be_replaced/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "replace_confirm.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "replace_ok",
+                    "path_prefix": "data/ok/",
+                    "reason": "确认替换测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "replacer",
+            "--mode", "replace",
+            "--replace-confirm-manual-delete",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0, f"confirm后replace应成功: {r.stderr}")
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 1)
+        self.assertEqual(rules["rules"][0]["id"], "replace_ok")
+
+
+class TestWaiverListShowsSource(WaiverTestBase):
+    def test_list_shows_source_and_transaction(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "手工规则",
+            "--path-prefix", "data/manual_src/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "src_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "batch_src",
+                    "path_prefix": "data/batch_src/",
+                    "reason": "批量导入规则",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "list",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[手工]", r.stdout)
+        self.assertIn("[批量导入]", r.stdout)
+        self.assertIn("来源: manual", r.stdout)
+        self.assertIn("来源: batch_import", r.stdout)
+        self.assertIn("事务ID: TX-", r.stdout)
+
+    def test_list_show_log_includes_rollback(self):
+        export_path = os.path.join(self.tmp_dir, "log_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "log_test",
+                    "path_prefix": "data/log_test/",
+                    "reason": "日志测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "list", "--show-log",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("导入规则", r.stdout)
+        self.assertIn("回滚导入", r.stdout)
+
+
+class TestWaiverExportIncludesSource(WaiverTestBase):
+    def test_export_includes_source_and_transaction(self):
+        export_path = os.path.join(self.tmp_dir, "export_src.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "export_src",
+                    "path_prefix": "data/export_src/",
+                    "reason": "导出测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+
+        re_export_path = os.path.join(self.tmp_dir, "re_export.json")
+        run_cli(
+            "waiver", "export", re_export_path,
+            "--actor", "exporter",
+            extra_env=self.extra_env,
+        )
+
+        with open(re_export_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(len(data["rules"]), 1)
+        self.assertEqual(data["rules"][0]["source"], "batch_import")
+        self.assertIsNotNone(data["rules"][0].get("transaction_id"))
+
+
+class TestWaiverPersistenceAcrossRestartsNew(WaiverTestBase):
+    def test_transactions_persist_across_restart(self):
+        export_path = os.path.join(self.tmp_dir, "persist_tx.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "persist_tx",
+                    "path_prefix": "data/persist_tx/",
+                    "reason": "事务持久化测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("committed", r.stdout)
+
+        store2 = WaiverStore(
+            rules_path=os.path.join(self.config_dir, "waiver_rules.json"),
+            log_path=os.path.join(self.config_dir, "waiver_audit_log.json"),
+            transactions_path=os.path.join(self.config_dir, "waiver_transactions.json"),
+        )
+        tx2 = store2.get_last_committed_transaction()
+        self.assertIsNotNone(tx2)
+        self.assertEqual(tx2.status.value, "committed")
+        self.assertEqual(tx2.actor, "importer")
+
+    def test_rollback_works_after_restart(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "重启后应保留",
+            "--path-prefix", "data/restart_keep/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "restart_rb.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "restart_rb",
+                    "path_prefix": "data/restart_rb/",
+                    "reason": "重启后回滚测试",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+
+        rules_before = self._read_waiver_rules()
+        self.assertEqual(len(rules_before["rules"]), 2)
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("保留手工规则数: 1", r.stdout)
+
+        rules_after = self._read_waiver_rules()
+        self.assertEqual(len(rules_after["rules"]), 1)
+        self.assertEqual(rules_after["rules"][0]["path_prefix"], "data/restart_keep/")
+
+
+class TestWaiverFullWorkflow(WaiverTestBase):
+    def test_full_dry_run_import_rollback_workflow(self):
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "全程测试手工规则",
+            "--path-prefix", "data/full_manual/",
+            extra_env=self.extra_env,
+        )
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "冲突规则",
+            "--path-prefix", "data/conflict/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "full_workflow.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "full_new",
+                    "path_prefix": "data/full_new/",
+                    "reason": "全新规则",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+                {
+                    "id": "full_conflict",
+                    "path_prefix": "data/conflict/sub/",
+                    "reason": "冲突规则",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("新增规则: 1", r.stdout)
+        self.assertIn("冲突/风险 (跳过): 1", r.stdout)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("成功添加: 1", r.stdout)
+        self.assertIn("跳过 (冲突/风险): 1", r.stdout)
+
+        rules_after_import = self._read_waiver_rules()
+        self.assertEqual(len(rules_after_import["rules"]), 3)
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("移除导入规则数: 1", r.stdout)
+        self.assertIn("保留手工规则数: 2", r.stdout)
+
+        rules_after_rollback = self._read_waiver_rules()
+        self.assertEqual(len(rules_after_rollback["rules"]), 2)
+        for r in rules_after_rollback["rules"]:
+            self.assertEqual(r["source"], "manual")
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("rolled_back", r.stdout)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("成功添加: 1", r.stdout)
+
+        rules_final = self._read_waiver_rules()
+        self.assertEqual(len(rules_final["rules"]), 3)
 
 
 if __name__ == "__main__":

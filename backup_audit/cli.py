@@ -28,6 +28,7 @@ from .waiver import (
     WaiverConflictError,
     WaiverRule,
     WaiverStore,
+    WaiverTransactionError,
     WaiverValidationError,
     get_global_config_dir,
 )
@@ -629,9 +630,13 @@ def cmd_waiver_list(args: argparse.Namespace) -> int:
                         expired_tag = " [已过期]"
                 except ValueError:
                     pass
-            print(f"\n  [{rule.id}]{expired_tag}")
+            source_tag = " [手工]" if rule.source.value == "manual" else " [批量导入]"
+            print(f"\n  [{rule.id}]{expired_tag}{source_tag}")
             print(f"    操作人: {rule.actor}")
             print(f"    创建时间: {rule.created_at}")
+            print(f"    来源: {rule.source.value}")
+            if rule.transaction_id:
+                print(f"    事务ID: {rule.transaction_id}")
             conditions = []
             if rule.path_prefix:
                 conditions.append(f"路径前缀={rule.path_prefix}")
@@ -655,11 +660,36 @@ def cmd_waiver_list(args: argparse.Namespace) -> int:
             print("  暂无日志")
         else:
             for entry in log_entries:
-                print(f"  [{entry.timestamp}] {entry.action.value} by {entry.actor}")
+                action_desc = {
+                    "waiver_add": "新增规则",
+                    "waiver_delete": "删除规则",
+                    "waiver_import": "导入规则",
+                    "waiver_export": "导出规则",
+                    "waiver_rollback": "回滚导入",
+                    "waiver_precheck": "预演导入",
+                }.get(entry.action.value, entry.action.value)
+                print(f"  [{entry.timestamp}] {action_desc} ({entry.action.value}) by {entry.actor}")
                 if entry.rule_id:
                     print(f"    规则ID: {entry.rule_id}")
                 if entry.detail:
-                    print(f"    详情: {json.dumps(entry.detail, ensure_ascii=False)}")
+                    if entry.action.value == "waiver_import":
+                        tx_id = entry.detail.get("transaction_id", "N/A")
+                        mode = entry.detail.get("mode", "N/A")
+                        added = len(entry.detail.get("added", []))
+                        print(f"    事务ID: {tx_id}")
+                        print(f"    模式: {mode}")
+                        print(f"    新增: {added} 条")
+                    elif entry.action.value == "waiver_rollback":
+                        tx_id = entry.detail.get("transaction_id", "N/A")
+                        restored = entry.detail.get("restored_count", 0)
+                        removed = entry.detail.get("removed_count", 0)
+                        manual_preserved = entry.detail.get("manual_rules_preserved", 0)
+                        print(f"    事务ID: {tx_id}")
+                        print(f"    恢复: {restored} 条")
+                        print(f"    移除: {removed} 条")
+                        print(f"    保留手工规则: {manual_preserved} 条")
+                    else:
+                        print(f"    详情: {json.dumps(entry.detail, ensure_ascii=False)}")
     return 0
 
 
@@ -704,19 +734,86 @@ def cmd_waiver_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_precheck_result(precheck) -> None:
+    print(f"=== 导入预演结果 ===")
+    print(f"  源文件: {precheck.source_file}")
+    print(f"  导入模式: {precheck.mode}")
+    print(f"  文件中规则总数: {precheck.total_rules}")
+    print()
+    print(f"  新增规则: {len(precheck.new_rules)}")
+    for r in precheck.new_rules:
+        desc = []
+        if r.path_prefix:
+            desc.append(f"路径={r.path_prefix}")
+        if r.business_line:
+            desc.append(f"业务线={r.business_line}")
+        if r.issue_type:
+            desc.append(f"类型={r.issue_type.value}")
+        if r.severity:
+            desc.append(f"严重度={r.severity.value}")
+        print(f"    + {r.id}: {r.reason} ({', '.join(desc)})")
+    print()
+    print(f"  已存在 (跳过): {len(precheck.existing_rules)}")
+    for r in precheck.existing_rules:
+        print(f"    = {r.id}: {r.reason}")
+    print()
+    print(f"  冲突/风险 (跳过): {len(precheck.conflicting_rules)}")
+    for c in precheck.conflicting_rules:
+        rule = c["rule"]
+        reasons = "; ".join(c["conflict_reasons"])
+        print(f"    ! {rule['id']}: {reasons}")
+    print()
+    print(f"  已过期 (跳过): {len(precheck.expired_rules)}")
+    for r in precheck.expired_rules:
+        print(f"    e {r.id}: 过期于 {r.expires_at}")
+    print()
+    print(f"  无效规则: {len(precheck.invalid_rules)}")
+    for inv in precheck.invalid_rules:
+        print(f"    x 索引 {inv['index']}: {inv['error']}")
+    print()
+    if precheck.file_errors:
+        print(f"  文件错误: {len(precheck.file_errors)}")
+        for err in precheck.file_errors:
+            print(f"    X {err}")
+        print()
+    if precheck.can_commit:
+        print(f"  ✅ 预演通过，可以执行导入。")
+    else:
+        print(f"  ❌ 预演未通过，存在错误，无法执行导入。")
+
+
 def cmd_waiver_import(args: argparse.Namespace) -> int:
     store = WaiverStore()
     input_path = os.path.abspath(args.input)
+
+    if getattr(args, "dry_run", False):
+        try:
+            precheck = store.precheck_import(input_path, mode=args.mode)
+        except Exception as e:
+            print(f"错误: 预演失败 - {e}", file=sys.stderr)
+            return 20
+        _print_precheck_result(precheck)
+        return 0 if precheck.can_commit else 21
+
     try:
-        result = store.import_rules(input_path, args.actor, mode=args.mode)
+        result = store.import_rules(
+            input_path,
+            args.actor,
+            mode=args.mode,
+            replace_confirm_manual_delete=getattr(args, "replace_confirm_manual_delete", False),
+        )
     except WaiverValidationError as e:
         print(f"错误: {e}", file=sys.stderr)
         return 16
+    except WaiverTransactionError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 22
     except (json.JSONDecodeError, KeyError) as e:
         print(f"错误: 导入文件格式无效 - {e}", file=sys.stderr)
         return 17
 
     print(f"豁免规则导入完成 (模式: {args.mode})")
+    print(f"  事务ID: {result.get('transaction_id', 'N/A')}")
     print(f"  操作人: {args.actor}")
     print(f"  文件中规则数: {result['total_imported']}")
     print(f"  成功添加: {len(result['added'])}")
@@ -731,6 +828,76 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
         print(f"  跳过 (冲突/风险): {len(result['conflicts'])}")
         for rid in result["conflicts"]:
             print(f"    ! {rid}")
+    print()
+    print("提示: 如需回滚此次导入，请执行:")
+    print(f"  python backup_audit_cli.py waiver rollback --actor {args.actor}")
+    return 0
+
+
+def cmd_waiver_rollback(args: argparse.Namespace) -> int:
+    store = WaiverStore()
+    last_tx = store.get_last_committed_transaction()
+
+    if not last_tx:
+        print("错误: 没有可回滚的导入事务。", file=sys.stderr)
+        return 23
+
+    print(f"即将回滚最近一次导入事务:")
+    print(f"  事务ID: {last_tx.id}")
+    print(f"  操作人: {last_tx.actor}")
+    print(f"  时间: {last_tx.timestamp}")
+    print(f"  模式: {last_tx.mode}")
+    print(f"  源文件: {last_tx.source_file}")
+    print(f"  导入规则数: {len(last_tx.imported_rule_ids)}")
+    print()
+    print("回滚将:")
+    print(f"  - 恢复到导入前的规则状态（共 {len(last_tx.rules_before)} 条规则）")
+    print(f"  - 保留期间新增的手工规则")
+    print(f"  - 标记事务状态为已回滚")
+    print()
+
+    if not getattr(args, "yes", False):
+        print("请使用 --yes 确认回滚操作。")
+        return 24
+
+    try:
+        result = store.rollback_last_import(args.actor)
+    except WaiverTransactionError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 25
+
+    print(f"回滚完成:")
+    print(f"  事务ID: {result['transaction_id']}")
+    print(f"  操作人: {args.actor}")
+    print(f"  移除导入规则数: {result['removed_count']}")
+    print(f"  保留手工规则数: {result['manual_rules_preserved']}")
+    if result["removed_ids"]:
+        print(f"  已移除规则:")
+        for rid in result["removed_ids"]:
+            print(f"    - {rid}")
+    return 0
+
+
+def cmd_waiver_transactions(args: argparse.Namespace) -> int:
+    store = WaiverStore()
+    transactions = store.list_transactions(limit=getattr(args, "limit", 10))
+
+    if not transactions:
+        print("暂无导入事务记录。")
+        return 0
+
+    print(f"=== 导入事务历史 (最近 {len(transactions)} 条) ===")
+    for tx in transactions:
+        status_icon = "✅" if tx.status.value == "committed" else "↩️" if tx.status.value == "rolled_back" else "⏳"
+        print(f"{status_icon} [{tx.timestamp}] {tx.id}")
+        print(f"    状态: {tx.status.value}")
+        print(f"    操作人: {tx.actor}")
+        print(f"    模式: {tx.mode}")
+        print(f"    源文件: {tx.source_file}")
+        print(f"    导入规则数: {len(tx.imported_rule_ids)}")
+        if tx.detail.get("removed_ids"):
+            print(f"    回滚移除: {len(tx.detail['removed_ids'])} 条")
+        print()
     return 0
 
 
@@ -884,7 +1051,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_waiver_export.add_argument("--actor", required=True, help="操作人")
     p_waiver_export.set_defaults(func=cmd_waiver_export)
 
-    p_waiver_import = waiver_sub.add_parser("import", help="从 JSON 文件导入豁免规则")
+    p_waiver_import = waiver_sub.add_parser(
+        "import",
+        help="从 JSON 文件导入豁免规则（建议先使用 --dry-run 预演）",
+    )
     p_waiver_import.add_argument("input", help="输入文件路径 (.json)")
     p_waiver_import.add_argument("--actor", required=True, help="操作人")
     p_waiver_import.add_argument(
@@ -893,7 +1063,32 @@ def build_parser() -> argparse.ArgumentParser:
         default="merge",
         help="导入模式: merge(默认)=合并跳过冲突, replace=替换全部",
     )
+    p_waiver_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="仅预演导入，不实际修改规则。显示新增、冲突、已存在、已过期数量。",
+    )
+    p_waiver_import.add_argument(
+        "--replace-confirm-manual-delete",
+        action="store_true",
+        help="replace 模式下确认删除所有手工规则（防止误删）",
+    )
     p_waiver_import.set_defaults(func=cmd_waiver_import)
+
+    p_waiver_rollback = waiver_sub.add_parser(
+        "rollback",
+        help="回滚最近一次导入事务（只移除批量导入的规则，保留手工规则）",
+    )
+    p_waiver_rollback.add_argument("--actor", required=True, help="操作人")
+    p_waiver_rollback.add_argument("--yes", action="store_true", help="确认执行回滚")
+    p_waiver_rollback.set_defaults(func=cmd_waiver_rollback)
+
+    p_waiver_transactions = waiver_sub.add_parser(
+        "transactions",
+        help="查看导入事务历史（可用于追溯和确认回滚）",
+    )
+    p_waiver_transactions.add_argument("--limit", type=int, default=10, help="显示最近 N 条记录")
+    p_waiver_transactions.set_defaults(func=cmd_waiver_transactions)
 
     p_waiver_rescan = waiver_sub.add_parser("rescan", help="用当前豁免规则重新扫描批次，更新豁免状态")
     p_waiver_rescan.add_argument("backup_dir", help="备份包目录")
