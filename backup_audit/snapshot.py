@@ -6,11 +6,56 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from .waiver import WaiverStore, get_global_config_dir
 
 SNAPSHOTS_DIR_NAME = "waiver_snapshots"
+SNAPSHOT_AUDIT_LOG_FILENAME = "snapshot_audit_log.json"
+
+
+class SnapshotAction(str, Enum):
+    CREATE = "snapshot_create"
+    SEAL = "snapshot_seal"
+    FORK = "snapshot_fork"
+    APPEND = "snapshot_append"
+    EXPORT = "snapshot_export"
+    SHOW = "snapshot_show"
+
+
+class SnapshotStatus(str, Enum):
+    DRAFT = "draft"
+    SEALED = "sealed"
+    FORKED = "forked"
+
+
+@dataclass
+class SnapshotAuditLogEntry:
+    action: SnapshotAction
+    actor: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    snapshot_name: Optional[str] = None
+    detail: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action.value,
+            "actor": self.actor,
+            "timestamp": self.timestamp,
+            "snapshot_name": self.snapshot_name,
+            "detail": self.detail,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SnapshotAuditLogEntry":
+        return cls(
+            action=SnapshotAction(data["action"]),
+            actor=data.get("actor", ""),
+            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            snapshot_name=data.get("snapshot_name"),
+            detail=data.get("detail", {}),
+        )
 
 
 class SnapshotSealedError(Exception):
@@ -145,34 +190,143 @@ class SnapshotStore:
     def __init__(self, snapshots_dir: Optional[str] = None):
         self.snapshots_dir = snapshots_dir or _get_snapshots_dir()
         os.makedirs(self.snapshots_dir, exist_ok=True)
+        self.audit_log_path = os.path.join(self.snapshots_dir, SNAPSHOT_AUDIT_LOG_FILENAME)
+        self.audit_log: List[SnapshotAuditLogEntry] = []
+        self._load_audit_log()
 
     def _snapshot_path(self, name: str) -> str:
         safe_name = name.replace("/", "_").replace("\\", "_").replace("..", "_")
         return os.path.join(self.snapshots_dir, f"{safe_name}.json")
 
-    def create(self, name: str, record: Optional[SnapshotRecord] = None) -> OperationSnapshot:
+    def _load_audit_log(self) -> None:
+        if os.path.exists(self.audit_log_path):
+            try:
+                with open(self.audit_log_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.audit_log = [SnapshotAuditLogEntry.from_dict(e) for e in data.get("log", [])]
+            except (json.JSONDecodeError, KeyError):
+                self.audit_log = []
+
+    def _save_audit_log(self) -> None:
+        with open(self.audit_log_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"log": [e.to_dict() for e in self.audit_log]},
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    def _log_operation(
+        self,
+        action: SnapshotAction,
+        actor: str,
+        snapshot_name: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.audit_log.append(SnapshotAuditLogEntry(
+            action=action,
+            actor=actor,
+            snapshot_name=snapshot_name,
+            detail=detail or {},
+        ))
+        self._save_audit_log()
+
+    def get_snapshot_status_detail(self, name: str) -> Optional[Dict[str, Any]]:
+        snapshot = self.load(name)
+        if snapshot is None:
+            return None
+        status = self._classify_status(snapshot)
+        next_steps = self._suggest_next_steps(snapshot)
+        return {
+            "name": snapshot.name,
+            "status": status.value,
+            "status_label": self._get_status_label(snapshot),
+            "sealed": snapshot.sealed,
+            "sealed_at": snapshot.sealed_at,
+            "forked_from": snapshot.forked_from,
+            "record_count": len(snapshot.records),
+            "created_at": snapshot.created_at,
+            "updated_at": snapshot.updated_at,
+            "config_dir_fingerprint": snapshot.config_dir_fingerprint,
+            "export_count": len(snapshot.export_history),
+            "next_steps": next_steps,
+            "stuck_at": self._get_stuck_stage(snapshot),
+        }
+
+    @staticmethod
+    def _classify_status(snapshot: OperationSnapshot) -> SnapshotStatus:
+        if snapshot.forked_from:
+            return SnapshotStatus.FORKED
+        if snapshot.sealed:
+            return SnapshotStatus.SEALED
+        return SnapshotStatus.DRAFT
+
+    def _get_status_label(self, snapshot: OperationSnapshot) -> str:
+        status = self._classify_status(snapshot)
+        if status == SnapshotStatus.SEALED:
+            return "已封版"
+        if status == SnapshotStatus.FORKED:
+            if snapshot.sealed:
+                return "已分叉且已封版"
+            return "已分叉 (未封版，仍可追加)"
+        return "草稿（未封版，仍可追加）"
+
+    @staticmethod
+    def _get_stuck_stage(snapshot: OperationSnapshot) -> str:
+        if snapshot.sealed:
+            if snapshot.export_history:
+                return "封版且已导出，可用于对账归档"
+            return "已封版但尚未导出，建议导出后归档"
+        if len(snapshot.records) == 0:
+            return "空草稿，尚未写入任何操作记录"
+        if snapshot.forked_from:
+            return "分叉后的草稿，可继续追加操作或封版"
+        return "草稿状态，已有操作记录，建议封版前核对"
+
+    @staticmethod
+    def _suggest_next_steps(snapshot: OperationSnapshot) -> List[str]:
+        steps = []
+        if snapshot.sealed:
+            steps.append(f"使用 --append 续写封版快照（仅在确认需要补充时使用）")
+            steps.append(f"使用 --fork-from {snapshot.name} 从该快照分叉出新快照")
+            steps.append(f"使用 waiver snapshot export {snapshot.name} 导出快照用于归档对账")
+        else:
+            steps.append(f"使用 --append 向已有快照追加记录")
+            steps.append(f"使用 waiver snapshot seal {snapshot.name} 封版快照")
+            steps.append(f"使用 --fork-from {snapshot.name} 从该快照分叉出新快照")
+        return steps
+
+    def get_audit_log(self, limit: Optional[int] = None) -> List[SnapshotAuditLogEntry]:
+        if limit and limit > 0:
+            return list(reversed(self.audit_log[-limit:]))
+        return list(self.audit_log)
+
+    def create(self, name: str, record: Optional[SnapshotRecord] = None, actor: str = "") -> OperationSnapshot:
         path = self._snapshot_path(name)
         if os.path.exists(path):
-            existing = self.load(name)
-            if existing is not None:
-                status_parts = []
-                if existing.sealed:
-                    status_parts.append(f"已封版 (封版时间: {existing.sealed_at})")
-                else:
-                    status_parts.append("未封版 (仍可追加)")
-                status_parts.append(f"记录条数: {len(existing.records)}")
-                status_parts.append(f"创建时间: {existing.created_at}")
-                status_parts.append(f"最后更新: {existing.updated_at}")
-                if existing.forked_from:
-                    status_parts.append(f"分叉自: {existing.forked_from}")
-                status_str = "；".join(status_parts)
-                raise SnapshotNameConflictError(
-                    f"快照名称 '{name}' 已存在，当前状态: {status_str}。\n"
-                    f"可选操作:\n"
-                    f"  1. 使用 --append 向已有快照追加记录\n"
-                    f"  2. 使用 --fork-from {name} 从该快照分叉出新快照\n"
-                    f"  3. 使用不同的名称创建新快照"
-                )
+            detail = self.get_snapshot_status_detail(name)
+            if detail is not None:
+                status_label = detail["status_label"]
+                stuck_at = detail["stuck_at"]
+                next_steps = detail["next_steps"]
+                lines = [
+                    f"快照名称 '{name}' 已存在。",
+                    f"  当前状态: {status_label}",
+                    f"  记录条数: {detail['record_count']}",
+                    f"  创建时间: {detail['created_at']}",
+                    f"  最后更新: {detail['updated_at']}",
+                ]
+                if detail["sealed"]:
+                    lines.append(f"  封版时间: {detail['sealed_at']}")
+                if detail["forked_from"]:
+                    lines.append(f"  分叉自: {detail['forked_from']}")
+                lines.append(f"  当前阶段: {stuck_at}")
+                lines.append("")
+                lines.append("建议操作:")
+                for i, step in enumerate(next_steps, 1):
+                    lines.append(f"  {i}. {step}")
+                lines.append(f"  {len(next_steps) + 1}. 使用不同的名称创建新快照")
+                raise SnapshotNameConflictError("\n".join(lines))
         now = datetime.now().isoformat()
         snapshot = OperationSnapshot(
             name=name,
@@ -182,19 +336,40 @@ class SnapshotStore:
             config_dir_fingerprint=_config_dir_fingerprint(),
         )
         self._save(snapshot)
+        self._log_operation(
+            action=SnapshotAction.CREATE,
+            actor=actor,
+            snapshot_name=name,
+            detail={
+                "record_count": len(snapshot.records),
+                "config_dir_fingerprint": snapshot.config_dir_fingerprint,
+            },
+        )
         return snapshot
 
-    def append(self, name: str, record: SnapshotRecord, allow_sealed: bool = False) -> OperationSnapshot:
+    def append(self, name: str, record: SnapshotRecord, allow_sealed: bool = False, actor: str = "") -> OperationSnapshot:
         snapshot = self.load(name)
         if snapshot is None:
-            raise ValueError(f"快照 '{name}' 不存在，请先创建。")
+            raise ValueError(f"快照 '{name}' 不存在，请先使用 'waiver snapshot create {name}' 创建。")
         if snapshot.sealed and not allow_sealed:
             raise SnapshotSealedError(
-                f"快照 '{name}' 已于 {snapshot.sealed_at} 封版，不能追加记录。"
-                f"如需续写封版快照，必须使用 --append 参数。"
+                f"快照 '{name}' 已于 {snapshot.sealed_at} 封版，不能追加记录。\n"
+                f"如需续写封版快照，必须使用 --snapshot-append 参数；\n"
+                f"如需分叉出新快照，请使用 --snapshot-fork-from 参数。"
             )
         snapshot.add_record_forced(record)
         self._save(snapshot)
+        self._log_operation(
+            action=SnapshotAction.APPEND,
+            actor=actor,
+            snapshot_name=name,
+            detail={
+                "record_command": record.command,
+                "success": record.success,
+                "total_records": len(snapshot.records),
+                "sealed_before_append": snapshot.sealed,
+            },
+        )
         return snapshot
 
     def seal(self, name: str, actor: str = "") -> OperationSnapshot:
@@ -202,23 +377,39 @@ class SnapshotStore:
         if snapshot is None:
             raise ValueError(f"快照 '{name}' 不存在。")
         if snapshot.sealed:
+            detail = self.get_snapshot_status_detail(name)
             raise ValueError(
-                f"快照 '{name}' 已于 {snapshot.sealed_at} 封版，不能重复封版。"
+                f"快照 '{name}' 已于 {snapshot.sealed_at} 封版，不能重复封版。\n"
+                f"当前阶段: {detail['stuck_at'] if detail else '未知'}\n"
+                f"建议: 使用 --snapshot-append 续写，或使用 --fork-from 分叉。"
             )
         snapshot.seal(actor)
         self._save(snapshot)
+        self._log_operation(
+            action=SnapshotAction.SEAL,
+            actor=actor,
+            snapshot_name=name,
+            detail={
+                "record_count": len(snapshot.records),
+                "sealed_at": snapshot.sealed_at,
+            },
+        )
         return snapshot
 
-    def fork_from(self, source_name: str, new_name: str, record: Optional[SnapshotRecord] = None) -> OperationSnapshot:
+    def fork_from(self, source_name: str, new_name: str, record: Optional[SnapshotRecord] = None, actor: str = "") -> OperationSnapshot:
         source = self.load(source_name)
         if source is None:
-            raise ValueError(f"源快照 '{source_name}' 不存在，无法分叉。")
+            raise ValueError(f"源快照 '{source_name}' 不存在，无法分叉。请先创建或使用其他源快照。")
         new_path = self._snapshot_path(new_name)
         if os.path.exists(new_path):
-            existing = self.load(new_name)
-            if existing is not None:
+            detail = self.get_snapshot_status_detail(new_name)
+            if detail is not None:
                 raise SnapshotNameConflictError(
-                    f"目标快照名称 '{new_name}' 已存在，请使用其他名称。"
+                    f"目标快照名称 '{new_name}' 已存在。\n"
+                    f"  当前状态: {detail['status_label']}\n"
+                    f"  记录条数: {detail['record_count']}\n"
+                    f"  当前阶段: {detail['stuck_at']}\n"
+                    f"建议: 使用其他名称分叉，或直接向已有快照追加记录。"
                 )
         now = datetime.now().isoformat()
         import copy
@@ -235,6 +426,16 @@ class SnapshotStore:
             config_dir_fingerprint=_config_dir_fingerprint(),
         )
         self._save(new_snapshot)
+        self._log_operation(
+            action=SnapshotAction.FORK,
+            actor=actor,
+            snapshot_name=new_name,
+            detail={
+                "forked_from": source_name,
+                "inherited_record_count": len(source.records),
+                "new_record_added": record is not None,
+            },
+        )
         return new_snapshot
 
     def load(self, name: str) -> Optional[OperationSnapshot]:
@@ -336,16 +537,28 @@ class SnapshotStore:
 
         return warnings
 
-    def record_export(self, name: str, export_format: str, output_path: str) -> None:
+    def record_export(self, name: str, export_format: str, output_path: str, actor: str = "") -> None:
         snapshot = self.load(name)
         if snapshot is None:
             return
+        export_ts = datetime.now().isoformat()
         snapshot.export_history.append({
             "format": export_format,
             "output_path": output_path,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": export_ts,
         })
         self._save(snapshot)
+        self._log_operation(
+            action=SnapshotAction.EXPORT,
+            actor=actor,
+            snapshot_name=name,
+            detail={
+                "format": export_format,
+                "output_path": output_path,
+                "timestamp": export_ts,
+                "total_export_count": len(snapshot.export_history),
+            },
+        )
 
     def export_markdown(self, name: str, store: Optional[WaiverStore] = None) -> str:
         snapshot = self.load(name)

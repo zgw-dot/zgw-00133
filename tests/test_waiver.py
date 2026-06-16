@@ -2143,9 +2143,16 @@ class TestWaiverSnapshotBasic(WaiverTestBase):
             json.dump(test_rules, f)
         return export_path
 
-    def test_dry_run_creates_snapshot(self):
+    def test_dry_run_records_to_existing_snapshot(self):
         self._setup_batch()
         export_path = self._make_import_file("snap_dry.json", "snap_dry_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "test_snap",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         r = run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2169,6 +2176,13 @@ class TestWaiverSnapshotBasic(WaiverTestBase):
     def test_import_and_rollback_append_to_snapshot(self):
         self._setup_batch()
         export_path = self._make_import_file("snap_imp.json", "snap_imp_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "multi_step",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         r = run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2193,9 +2207,16 @@ class TestWaiverSnapshotBasic(WaiverTestBase):
         self.assertIn("waiver import", r.stdout)
         self.assertIn("waiver rollback", r.stdout)
 
-    def test_duplicate_snapshot_name_blocked(self):
+    def test_duplicate_snapshot_name_append_not_create(self):
         self._setup_batch()
         export_path = self._make_import_file("snap_dup.json", "snap_dup_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "dup_name",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2220,6 +2241,13 @@ class TestWaiverSnapshotBasic(WaiverTestBase):
     def test_snapshot_export_markdown(self):
         self._setup_batch()
         export_path = self._make_import_file("snap_exp.json", "snap_exp_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "export_test",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2245,6 +2273,13 @@ class TestWaiverSnapshotBasic(WaiverTestBase):
     def test_snapshot_export_json(self):
         self._setup_batch()
         export_path = self._make_import_file("snap_expj.json", "snap_expj_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "json_test",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2291,6 +2326,13 @@ class TestWaiverSnapshotValidation(WaiverTestBase):
     def test_validate_detects_rolled_back_transaction(self):
         self._setup_batch()
         export_path = self._make_import_file("val_rb.json", "val_rb_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "validate_test",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2320,11 +2362,20 @@ class TestWaiverSnapshotValidation(WaiverTestBase):
             extra_env=self.extra_env,
         )
         self.assertEqual(r.returncode, 0)
-        self.assertIn("校验警告", r.stdout)
+        self.assertIn("事务与失败记录校验", r.stdout)
+        self.assertIn("[WARN]", r.stdout)
+        self.assertIn("回滚", r.stdout)
 
     def test_validate_passed_when_consistent(self):
         self._setup_batch()
         export_path = self._make_import_file("val_ok.json", "val_ok_1")
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "valid_snap",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2345,6 +2396,13 @@ class TestWaiverSnapshotValidation(WaiverTestBase):
         bad_path = os.path.join(self.tmp_dir, "nonexistent.json")
         with open(bad_path, "w", encoding="utf-8") as f:
             f.write("not json")
+
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "fail_snap",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
 
         run_cli(
             "waiver", "import", bad_path,
@@ -2387,6 +2445,13 @@ class TestWaiverSnapshotPersistence(WaiverTestBase):
         self._setup_batch()
         export_path = self._make_import_file("persist1.json", "persist_1")
 
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "restart_test",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
+
         run_cli(
             "waiver", "import", export_path,
             "--actor", "tester",
@@ -2415,6 +2480,13 @@ class TestWaiverSnapshotPersistence(WaiverTestBase):
     def test_snapshot_consistent_with_transactions(self):
         self._setup_batch()
         export_path = self._make_import_file("consist.json", "consist_1")
+
+        r_create = run_cli(
+            "waiver", "snapshot", "create", "consist_test",
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r_create.returncode, 0)
 
         run_cli(
             "waiver", "import", export_path,

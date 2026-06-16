@@ -12,6 +12,8 @@ from backup_audit.snapshot import (
     OperationSnapshot,
     SnapshotSealedError,
     SnapshotNameConflictError,
+    SnapshotAction,
+    SnapshotStatus,
     _config_dir_fingerprint,
     build_config_summary,
 )
@@ -448,6 +450,218 @@ class TestSealedExportAndWaiverReconciliation(unittest.TestCase):
         json_str = self.snap_store.export_json("fail-snap", self.waiver_store)
         data = json.loads(json_str)
         self.assertTrue(len(data["_failed_record_validations"]) > 0)
+
+
+class TestAuditLog(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.snap_dir = os.path.join(self.tmpdir, "snapshots")
+        self.waiver_dir = os.path.join(self.tmpdir, "waiver")
+        os.makedirs(self.waiver_dir, exist_ok=True)
+        self.snap_store = SnapshotStore(snapshots_dir=self.snap_dir)
+        self.waiver_store = WaiverStore(
+            rules_path=os.path.join(self.waiver_dir, "rules.json"),
+            log_path=os.path.join(self.waiver_dir, "log.json"),
+            transactions_path=os.path.join(self.waiver_dir, "tx.json"),
+        )
+        self.record = SnapshotRecord(
+            command="test-cmd",
+            timestamp=datetime.now().isoformat(),
+            success=True,
+            output_summary="初始记录",
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_create_logs_audit_entry(self):
+        self.snap_store.create("audit-snap", self.record, actor="alice")
+        audit_log = self.snap_store.get_audit_log()
+        self.assertTrue(len(audit_log) >= 1)
+        create_entries = [e for e in audit_log if e.action == SnapshotAction.CREATE.value]
+        self.assertTrue(len(create_entries) >= 1)
+        self.assertEqual(create_entries[-1].snapshot_name, "audit-snap")
+        self.assertEqual(create_entries[-1].actor, "alice")
+
+    def test_seal_logs_audit_entry(self):
+        self.snap_store.create("seal-audit", self.record, actor="alice")
+        self.snap_store.seal("seal-audit", actor="bob")
+        audit_log = self.snap_store.get_audit_log()
+        seal_entries = [e for e in audit_log if e.action == SnapshotAction.SEAL.value and e.snapshot_name == "seal-audit"]
+        self.assertEqual(len(seal_entries), 1)
+        self.assertEqual(seal_entries[0].actor, "bob")
+
+    def test_append_logs_audit_entry(self):
+        self.snap_store.create("append-audit", self.record, actor="alice")
+        r2 = SnapshotRecord(
+            command="second-cmd",
+            timestamp=datetime.now().isoformat(),
+            success=True,
+            output_summary="第二条",
+        )
+        self.snap_store.append("append-audit", r2, actor="charlie")
+        audit_log = self.snap_store.get_audit_log()
+        append_entries = [e for e in audit_log if e.action == SnapshotAction.APPEND.value and e.snapshot_name == "append-audit"]
+        self.assertEqual(len(append_entries), 1)
+        self.assertEqual(append_entries[0].actor, "charlie")
+
+    def test_fork_logs_audit_entry(self):
+        self.snap_store.create("source-audit", self.record, actor="alice")
+        self.snap_store.seal("source-audit", actor="alice")
+        r2 = SnapshotRecord(
+            command="fork-cmd",
+            timestamp=datetime.now().isoformat(),
+            success=True,
+            output_summary="分叉记录",
+        )
+        self.snap_store.fork_from("source-audit", "forked-audit", r2, actor="dave")
+        audit_log = self.snap_store.get_audit_log()
+        fork_entries = [e for e in audit_log if e.action == SnapshotAction.FORK.value and e.snapshot_name == "forked-audit"]
+        self.assertEqual(len(fork_entries), 1)
+        self.assertEqual(fork_entries[0].actor, "dave")
+        self.assertEqual(fork_entries[0].detail.get("forked_from"), "source-audit")
+        self.assertIn("inherited_record_count", fork_entries[0].detail)
+
+    def test_export_logs_audit_entry(self):
+        self.snap_store.create("export-audit", self.record, actor="alice")
+        self.snap_store.seal("export-audit", actor="alice")
+        output_path = os.path.join(self.tmpdir, "export.md")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(self.snap_store.export_markdown("export-audit", self.waiver_store))
+        self.snap_store.record_export("export-audit", "markdown", output_path, actor="eve")
+        audit_log = self.snap_store.get_audit_log()
+        export_entries = [e for e in audit_log if e.action == SnapshotAction.EXPORT.value and e.snapshot_name == "export-audit"]
+        self.assertEqual(len(export_entries), 1)
+        self.assertEqual(export_entries[0].actor, "eve")
+
+    def test_audit_log_persists_across_restart(self):
+        self.snap_store.create("persist-audit", self.record, actor="alice")
+        self.snap_store.seal("persist-audit", actor="bob")
+        output_path = os.path.join(self.tmpdir, "persist.md")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(self.snap_store.export_markdown("persist-audit", self.waiver_store))
+        self.snap_store.record_export("persist-audit", "markdown", output_path, actor="charlie")
+
+        fresh_store = SnapshotStore(snapshots_dir=self.snap_dir)
+        audit_log = fresh_store.get_audit_log()
+        self.assertTrue(len(audit_log) >= 3)
+        actions = [e.action for e in audit_log if e.snapshot_name == "persist-audit"]
+        self.assertIn(SnapshotAction.CREATE.value, actions)
+        self.assertIn(SnapshotAction.SEAL.value, actions)
+        self.assertIn(SnapshotAction.EXPORT.value, actions)
+
+    def test_audit_log_limit(self):
+        for i in range(10):
+            self.snap_store.create(f"snap-{i}", self.record, actor="user")
+        full_log = self.snap_store.get_audit_log()
+        self.assertTrue(len(full_log) >= 10)
+        limited_log = self.snap_store.get_audit_log(limit=5)
+        self.assertEqual(len(limited_log), 5)
+
+
+class TestSnapshotStatusDetail(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.snap_store = SnapshotStore(snapshots_dir=self.tmpdir)
+        self.record = SnapshotRecord(
+            command="test-cmd",
+            timestamp=datetime.now().isoformat(),
+            success=True,
+            output_summary="测试记录",
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_draft_status_detail(self):
+        self.snap_store.create("draft-snap", self.record, actor="alice")
+        detail = self.snap_store.get_snapshot_status_detail("draft-snap")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["status"], SnapshotStatus.DRAFT.value)
+        self.assertIn("草稿", detail["status_label"])
+        self.assertIn("未封版", detail["status_label"])
+        self.assertIn("仍可追加", detail["status_label"])
+        self.assertEqual(detail["record_count"], 1)
+        self.assertFalse(detail["sealed"])
+        self.assertIsNotNone(detail["stuck_at"])
+        self.assertTrue(len(detail["next_steps"]) > 0)
+
+    def test_sealed_status_detail(self):
+        self.snap_store.create("sealed-detail", self.record, actor="alice")
+        self.snap_store.seal("sealed-detail", actor="bob")
+        detail = self.snap_store.get_snapshot_status_detail("sealed-detail")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["status"], SnapshotStatus.SEALED.value)
+        self.assertIn("已封版", detail["status_label"])
+        self.assertTrue(detail["sealed"])
+        self.assertIsNotNone(detail["sealed_at"])
+
+    def test_forked_status_detail(self):
+        self.snap_store.create("source-detail", self.record, actor="alice")
+        self.snap_store.seal("source-detail", actor="alice")
+        self.snap_store.fork_from("source-detail", "forked-detail", actor="bob")
+        detail = self.snap_store.get_snapshot_status_detail("forked-detail")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["status"], SnapshotStatus.FORKED.value)
+        self.assertIn("已分叉", detail["status_label"])
+        self.assertEqual(detail["forked_from"], "source-detail")
+
+    def test_nonexistent_snapshot_returns_none(self):
+        detail = self.snap_store.get_snapshot_status_detail("no-such-snap")
+        self.assertIsNone(detail)
+
+    def test_next_steps_contains_append_and_fork(self):
+        self.snap_store.create("steps-snap", self.record)
+        detail = self.snap_store.get_snapshot_status_detail("steps-snap")
+        steps_text = " ".join(detail["next_steps"])
+        self.assertIn("--append", steps_text)
+        self.assertIn("--fork-from", steps_text)
+
+    def test_sealed_next_steps_contains_export(self):
+        self.snap_store.create("sealed-steps", self.record)
+        self.snap_store.seal("sealed-steps", actor="admin")
+        detail = self.snap_store.get_snapshot_status_detail("sealed-steps")
+        steps_text = " ".join(detail["next_steps"])
+        self.assertIn("--append", steps_text)
+        self.assertIn("--fork-from", steps_text)
+        self.assertIn("export", steps_text)
+
+
+class TestNoAutoCreation(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.snap_store = SnapshotStore(snapshots_dir=self.tmpdir)
+        self.record = SnapshotRecord(
+            command="test-cmd",
+            timestamp=datetime.now().isoformat(),
+            success=True,
+            output_summary="测试记录",
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_append_to_nonexistent_raises(self):
+        with self.assertRaises((SnapshotNameConflictError, FileNotFoundError, ValueError)):
+            self.snap_store.append("no-such-snap", self.record)
+
+    def test_seal_nonexistent_raises(self):
+        with self.assertRaises((SnapshotNameConflictError, FileNotFoundError, ValueError)):
+            self.snap_store.seal("no-such-snap")
+
+    def test_fork_from_nonexistent_source_raises(self):
+        with self.assertRaises((SnapshotNameConflictError, FileNotFoundError, ValueError)):
+            self.snap_store.fork_from("no-such-source", "new-snap")
+
+    def test_load_nonexistent_returns_none(self):
+        result = self.snap_store.load("no-such-snap")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

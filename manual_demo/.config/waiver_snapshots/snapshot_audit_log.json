@@ -1,0 +1,14 @@
+{
+  "log": [
+    {
+      "action": "snapshot_create",
+      "actor": "tester",
+      "timestamp": "2026-06-16T12:35:19.214785",
+      "snapshot_name": "test-snap-xyz",
+      "detail": {
+        "record_count": 0,
+        "config_dir_fingerprint": "3671f788dfab741b"
+      }
+    }
+  ]
+}
