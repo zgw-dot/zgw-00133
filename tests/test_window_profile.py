@@ -1667,5 +1667,540 @@ class TestWindowProfileValidCrossProcess(unittest.TestCase):
             self.assertIn("(-05:00)", issue["message"], "问题消息应含模板时区")
 
 
+class TestAcceptanceNormalTemplateFullCycle(unittest.TestCase):
+    """验收视角：正常模板应用后，跨进程读取摘要、详情、报告的完整链路。"""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_acc_norm_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=4)).isoformat()
+        self.window_end = (now - timedelta(hours=1)).isoformat()
+
+        run_cli(
+            "window", "create", "acceptance_prof",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+07:00",
+            "--business-line", "order_system",
+            "--business-line", "payment_system",
+            "--notes", "验收视角完整链路模板",
+            "--actor", "template_admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "inside.dat", "content": b"inside window", "age_minutes": 150},
+                {"name": "outside.dat", "content": b"outside window", "age_minutes": 60 * 24 * 3},
+            ],
+            valid_bl=["order_system", "payment_system"],
+            batch_id="ACCEPT-001",
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "acceptance_prof",
+            "--actor", "batch_ops",
+            env_overrides=self.env,
+        )
+
+        run_cli(
+            "precheck", self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_resume_summary_contains_all_template_fields(self):
+        """resume 摘要必须带出模板名、版本、时区、应用人、应用时间、备注。"""
+        r = run_cli("resume", self.backup_dir, env_overrides=self.env)
+        self.assertEqual(r.returncode, 0, f"resume 应成功: {r.stderr}")
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("acceptance_prof", r.stdout)
+        self.assertIn("+07:00", r.stdout)
+        self.assertIn("验收视角完整链路模板", r.stdout)
+        self.assertIn("batch_ops", r.stdout)
+        self.assertIn("v1", r.stdout)
+        self.assertIn("应用时间", r.stdout)
+
+    def test_list_detail_shows_template_info(self):
+        """list 详情页必须显示窗口模板信息块。"""
+        r = run_cli("list", self.backup_dir, env_overrides=self.env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("acceptance_prof", r.stdout)
+        self.assertIn("+07:00", r.stdout)
+
+    def test_export_json_report_contains_complete_window_profile(self):
+        """JSON 报告的 window_profile 节必须包含全部关键字段且值正确。"""
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            "--format", "json",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"export 应成功: {r.stderr}")
+
+        json_path = os.path.join(reports_dir, "audit_report_ACCEPT-001.json")
+        self.assertTrue(os.path.exists(json_path))
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertIn("window_profile", report)
+        wp = report["window_profile"]
+        self.assertIsNotNone(wp)
+        self.assertEqual(wp["profile_name"], "acceptance_prof")
+        self.assertEqual(wp["profile_version"], 1)
+        self.assertEqual(wp["timezone"], "+07:00")
+        self.assertEqual(wp["applied_by"], "batch_ops")
+        self.assertEqual(wp["notes"], "验收视角完整链路模板")
+        self.assertEqual(wp["window_start"], self.window_start)
+        self.assertEqual(wp["window_end"], self.window_end)
+        self.assertEqual(wp["business_lines"], ["order_system", "payment_system"])
+        self.assertIn("profile_fingerprint", wp)
+        self.assertTrue(wp["profile_fingerprint"], "指纹不应为空")
+        self.assertIn("applied_at", wp)
+        self.assertTrue(wp["applied_at"], "应用时间不应为空")
+
+    def test_export_csv_report_contains_template_section(self):
+        """CSV 报告必须包含窗口模板块。"""
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            "--format", "csv",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"export csv 应成功: {r.stderr}")
+
+        csv_path = os.path.join(reports_dir, "audit_report_ACCEPT-001.csv")
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            csv_content = f.read()
+
+        self.assertIn("窗口模板", csv_content)
+        self.assertIn("acceptance_prof", csv_content)
+        self.assertIn("+07:00", csv_content)
+        self.assertIn("batch_ops", csv_content)
+        self.assertIn("验收视角完整链路模板", csv_content)
+
+    def test_snapshot_file_exists_and_matches_batch(self):
+        """模板快照文件必须存在，且内容与 batch 中的 snapshot 一致。"""
+        snap_dir = self.env["BACKUP_AUDIT_WINDOW_PROFILE_SNAPSHOTS"]
+        snap_files = os.listdir(snap_dir)
+        self.assertEqual(len(snap_files), 1, "应有一个快照文件")
+        self.assertTrue(snap_files[0].startswith("snapshot_ACCEPT-001"))
+
+        snap_path = os.path.join(snap_dir, snap_files[0])
+        with open(snap_path, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+
+        self.assertEqual(snap["profile_name"], "acceptance_prof")
+        self.assertEqual(snap["profile_version"], 1)
+        self.assertEqual(snap["timezone"], "+07:00")
+        self.assertEqual(snap["applied_by"], "batch_ops")
+        self.assertEqual(snap["batch_id"], "ACCEPT-001")
+
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        for bf in os.listdir(state_dir):
+            if bf.startswith("batch_") and bf.endswith(".json"):
+                with open(os.path.join(state_dir, bf), "r", encoding="utf-8") as f:
+                    batch = json.load(f)
+                self.assertEqual(
+                    batch["window_profile_snapshot"]["profile_fingerprint"],
+                    snap["profile_fingerprint"],
+                    "batch 中的快照指纹应与磁盘快照文件一致",
+                )
+                break
+        else:
+            self.fail("未找到 batch 文件")
+
+    def test_application_record_exists(self):
+        """应用清单必须包含本次应用记录。"""
+        app_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_APPLICATIONS"]
+        with open(app_path, "r", encoding="utf-8") as f:
+            app_data = json.load(f)
+
+        apps = app_data.get("applications", [])
+        self.assertEqual(len(apps), 1, "应有一条应用记录")
+        app = apps[0]
+        self.assertEqual(app["profile_name"], "acceptance_prof")
+        self.assertEqual(app["profile_version"], 1)
+        self.assertEqual(app["batch_id"], "ACCEPT-001")
+        self.assertEqual(app["applied_by"], "batch_ops")
+        self.assertIn("profile_fingerprint", app)
+
+    def test_audit_log_contains_create_and_apply(self):
+        """审计日志必须包含创建和应用两条记录，操作人正确。"""
+        log_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_LOG"]
+        with open(log_path, "r", encoding="utf-8") as f:
+            log_data = json.load(f)
+
+        log = log_data.get("log", [])
+        actions = [e["action"] for e in log]
+        self.assertIn("window_profile_create", actions)
+        self.assertIn("window_profile_apply", actions)
+
+        create_entries = [e for e in log if e["action"] == "window_profile_create"]
+        self.assertEqual(len(create_entries), 1)
+        self.assertEqual(create_entries[0]["actor"], "template_admin")
+
+        apply_entries = [e for e in log if e["action"] == "window_profile_apply"]
+        self.assertEqual(len(apply_entries), 1)
+        self.assertEqual(apply_entries[0]["actor"], "batch_ops")
+        self.assertEqual(apply_entries[0]["batch_id"], "ACCEPT-001")
+
+    def test_outside_window_issue_message_contains_timezone(self):
+        """越窗问题的消息中必须包含模板时区标识。"""
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            "--format", "json",
+            env_overrides=self.env,
+        )
+
+        json_path = os.path.join(reports_dir, "audit_report_ACCEPT-001.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        outside_issues = [i for i in report["all_issues"] if i["type"] == "outside_backup_window"]
+        self.assertTrue(len(outside_issues) > 0, "应检测到越窗问题")
+        for issue in outside_issues:
+            self.assertIn("(+07:00)", issue["message"], "越窗问题消息应包含模板时区")
+
+
+class TestTamperedTemplateThreeEntrypoints(unittest.TestCase):
+    """模板被人手改坏（+15:00）后，三种入口的退出码和磁盘痕迹对比。"""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_tamper_3entry_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "tampered_prof",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "原始合法模板",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [{"name": "good.dat", "content": b"good content"}],
+            valid_bl=["order_system"],
+            batch_id="TAMPER-001",
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _tamper_profiles_json(self, bad_timezone: str):
+        profiles_path = self.env["BACKUP_AUDIT_WINDOW_PROFILES"]
+        with open(profiles_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for p in data["profiles"]:
+            if p["name"] == "tampered_prof":
+                p["timezone"] = bad_timezone
+                break
+        with open(profiles_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _count_snapshot_files(self) -> int:
+        snap_dir = self.env["BACKUP_AUDIT_WINDOW_PROFILE_SNAPSHOTS"]
+        if not os.path.isdir(snap_dir):
+            return 0
+        return len(os.listdir(snap_dir))
+
+    def _count_application_records(self) -> int:
+        app_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_APPLICATIONS"]
+        if not os.path.exists(app_path):
+            return 0
+        with open(app_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return len(data.get("applications", []))
+
+    def _count_apply_log_entries(self) -> int:
+        log_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_LOG"]
+        if not os.path.exists(log_path):
+            return 0
+        with open(log_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return sum(1 for e in data.get("log", []) if e["action"] == "window_profile_apply")
+
+    def test_entry_1_window_create_with_bad_timezone(self):
+        """入口1：window create 直接喂 +15:00 —— 参数层校验，停在模板层，不涉及 batch。"""
+        now = datetime.now()
+        r = run_cli(
+            "window", "create", "bad_create_prof",
+            "--window-start", (now - timedelta(hours=2)).isoformat(),
+            "--window-end", now.isoformat(),
+            "--timezone", "+15:00",
+            "--business-line", "order_system",
+            "--actor", "tester",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "window create 带非法时区应失败")
+        self.assertIn("时区偏移超出合理范围", r.stderr)
+        self.assertIn("+15:00", r.stderr)
+
+        r_list = run_cli("window", "list", env_overrides=self.env)
+        self.assertNotIn("bad_create_prof", r_list.stdout, "失败的 create 不应留下模板")
+        self.assertEqual(self._count_snapshot_files(), 0, "create 失败不应产生快照")
+        self.assertEqual(self._count_application_records(), 0, "create 失败不应产生应用记录")
+        self.assertEqual(self._count_apply_log_entries(), 0, "create 失败不应产生 apply 日志")
+
+    def test_entry_2_window_apply_with_tampered_template(self):
+        """入口2：window apply 应用被篡改的模板 —— 应用层校验，不修改 batch。"""
+        self._tamper_profiles_json("+15:00")
+
+        r = run_cli(
+            "window", "apply", "tampered_prof",
+            self.backup_dir,
+            "--actor", "applier",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "window apply 非法模板应失败")
+        self.assertEqual(r.returncode, 45, "退出码应为 45（模板校验失败）")
+        self.assertIn("tampered_prof", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("+15:00", r.stderr)
+
+        self.assertEqual(self._count_snapshot_files(), 0, "apply 失败绝不能写快照")
+        self.assertEqual(self._count_application_records(), 0, "apply 失败绝不能写应用清单")
+        self.assertEqual(self._count_apply_log_entries(), 0, "apply 失败绝不能写 apply 日志")
+
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        for bf in os.listdir(state_dir):
+            if bf.startswith("batch_") and bf.endswith(".json"):
+                with open(os.path.join(state_dir, bf), "r", encoding="utf-8") as f:
+                    batch = json.load(f)
+                self.assertIsNone(batch.get("window_profile_snapshot"),
+                                "apply 失败不应修改 batch 的 snapshot 字段")
+                self.assertIsNone(batch.get("window_profile_ref"),
+                                "apply 失败不应修改 batch 的 ref 字段")
+                break
+
+    def test_entry_3_import_with_window_profile_tampered(self):
+        """入口3：import --window-profile 引用被篡改模板 —— 批处理层校验，留下半残 batch。"""
+        self._tamper_profiles_json("+15:00")
+
+        backup_dir2 = os.path.join(self.tmp_dir, "backup2")
+        os.makedirs(backup_dir2)
+        make_temp_backup(
+            backup_dir2,
+            [{"name": "file.dat", "content": b"content"}],
+            batch_id="HALF-001",
+            valid_bl=["order_system"],
+        )
+
+        r = run_cli(
+            "import",
+            os.path.join(backup_dir2, "manifest.json"),
+            backup_dir2,
+            "--window-profile", "tampered_prof",
+            "--actor", "importer",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "import --window-profile 非法模板应失败")
+        self.assertEqual(r.returncode, 49, "退出码应为 49（模板引用失败）")
+        self.assertIn("tampered_prof", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("+15:00", r.stderr)
+
+        state_dir = os.path.join(backup_dir2, ".audit_state")
+        batch_files = [f for f in os.listdir(state_dir) if f.startswith("batch_") and f.endswith(".json")]
+        self.assertTrue(len(batch_files) > 0, "import 失败也会留下 batch 状态文件")
+
+        with open(os.path.join(state_dir, batch_files[0]), "r", encoding="utf-8") as f:
+            batch = json.load(f)
+        self.assertEqual(batch["id"], "HALF-001")
+        self.assertIsNone(batch.get("window_profile_snapshot"),
+                        "半残批次的 window_profile_snapshot 应为 null")
+        self.assertIsNone(batch.get("window_profile_ref"),
+                        "半残批次的 window_profile_ref 应为 null")
+
+        self.assertEqual(self._count_snapshot_files(), 0, "失败不能写快照")
+        self.assertEqual(self._count_application_records(), 0, "失败不能写应用清单")
+        self.assertEqual(self._count_apply_log_entries(), 0, "失败不能写 apply 审计日志")
+
+
+class TestHalfBrokenBatchReRead(unittest.TestCase):
+    """半残批次（import --window-profile 失败后留下的）重新读取的真实表现。"""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_halfbroken_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "half_prof",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        profiles_path = self.env["BACKUP_AUDIT_WINDOW_PROFILES"]
+        with open(profiles_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for p in data["profiles"]:
+            if p["name"] == "half_prof":
+                p["timezone"] = "+15:00"
+                break
+        with open(profiles_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        make_temp_backup(
+            self.backup_dir,
+            [{"name": "data.dat", "content": b"data"}],
+            batch_id="HALF-BATCH-01",
+            valid_bl=["order_system"],
+        )
+
+        r = run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "half_prof",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "setUp: 构造半残批次应失败")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_resume_output_no_template_section(self):
+        """半残批次 resume 输出不应出现窗口模板块。"""
+        r = run_cli("resume", self.backup_dir, env_overrides=self.env)
+        self.assertEqual(r.returncode, 0, "resume 本身应成功")
+        self.assertNotIn("窗口模板", r.stdout)
+        self.assertNotIn("half_prof", r.stdout)
+        self.assertNotIn("+15:00", r.stdout)
+        self.assertNotIn("时区", r.stdout)
+
+    def test_list_output_no_template_section(self):
+        """半残批次 list 输出不应出现窗口模板块。"""
+        r = run_cli("list", self.backup_dir, env_overrides=self.env)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("窗口模板", r.stdout)
+        self.assertNotIn("half_prof", r.stdout)
+
+    def test_export_json_window_profile_is_none_not_absent(self):
+        """半残批次 JSON 报告中 window_profile 字段应为 null（字段存在，值为 null）。"""
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            "--format", "json",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, "export 应成功")
+
+        json_path = os.path.join(reports_dir, "audit_report_HALF-BATCH-01.json")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertIn("window_profile", report,
+                      "window_profile 字段应存在（为 null，不是缺席）")
+        self.assertIsNone(report["window_profile"],
+                          "window_profile 值应为 null")
+
+        self.assertIn("window_profile_ref", report,
+                      "window_profile_ref 字段应存在（为 null，不是缺席）")
+        self.assertIsNone(report["window_profile_ref"],
+                          "window_profile_ref 值应为 null")
+
+    def test_export_csv_no_template_section(self):
+        """半残批次 CSV 报告不应包含窗口模板块。"""
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            "--format", "csv",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        csv_path = os.path.join(reports_dir, "audit_report_HALF-BATCH-01.csv")
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            csv_content = f.read()
+
+        self.assertNotIn("窗口模板", csv_content)
+        self.assertNotIn("half_prof", csv_content)
+        self.assertNotIn("+15:00", csv_content)
+
+    def test_batch_state_file_has_null_snapshot_fields(self):
+        """半残批次的状态文件中，window_profile_snapshot 和 window_profile_ref 均为 null。"""
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        batch_files = [f for f in os.listdir(state_dir) if f.startswith("batch_") and f.endswith(".json")]
+        self.assertEqual(len(batch_files), 1)
+
+        with open(os.path.join(state_dir, batch_files[0]), "r", encoding="utf-8") as f:
+            batch = json.load(f)
+
+        self.assertIn("window_profile_snapshot", batch)
+        self.assertIsNone(batch["window_profile_snapshot"])
+        self.assertIn("window_profile_ref", batch)
+        self.assertIsNone(batch["window_profile_ref"])
+
+    def test_manifest_window_unchanged_from_import(self):
+        """半残批次的 manifest window 保持 import 时的原始值，未被模板覆盖。"""
+        state_dir = os.path.join(self.backup_dir, ".audit_state")
+        batch_files = [f for f in os.listdir(state_dir) if f.startswith("batch_") and f.endswith(".json")]
+        with open(os.path.join(state_dir, batch_files[0]), "r", encoding="utf-8") as f:
+            batch = json.load(f)
+
+        manifest_path = os.path.join(self.backup_dir, "manifest.json")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        self.assertEqual(
+            batch["manifest"]["backup_window"]["start"],
+            manifest["backup_window"]["start"],
+            "半残批次的窗口起始应保持原始 manifest 的值",
+        )
+        self.assertEqual(
+            batch["manifest"]["backup_window"]["end"],
+            manifest["backup_window"]["end"],
+            "半残批次的窗口结束应保持原始 manifest 的值",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
