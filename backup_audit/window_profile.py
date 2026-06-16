@@ -243,6 +243,19 @@ def validate_timezone(tz: str) -> Tuple[bool, str]:
         return False, "时区不能为空"
     if not _TIMEZONE_PATTERN.match(tz):
         return False, f"时区格式无效: '{tz}'。必须为 UTC、Z 或 ±HH:MM 格式（如 +08:00、-05:00）"
+    if tz in ("UTC", "Z"):
+        return True, ""
+    try:
+        sign = 1 if tz[0] == "+" else -1
+        hh = int(tz[1:3])
+        mm = int(tz[4:6])
+    except (ValueError, IndexError):
+        return False, f"时区解析失败: '{tz}'"
+    if mm < 0 or mm > 59:
+        return False, f"时区分钟部分无效: '{tz}'。分钟必须在 00-59 之间"
+    total_minutes = sign * (hh * 60 + mm)
+    if total_minutes < -12 * 60 or total_minutes > 14 * 60:
+        return False, f"时区偏移超出合理范围: '{tz}'。必须在 -12:00 到 +14:00 之间"
     return True, ""
 
 
@@ -398,21 +411,30 @@ class WindowProfileStore:
         valid_business_lines: Optional[List[str]] = None,
     ) -> None:
         if not profile.name or not profile.name.strip():
-            raise WindowProfileValidationError("模板名称不能为空")
+            raise WindowProfileValidationError("模板名称不能为空 (字段: name, 值: 空)")
         if len(profile.name) > 100:
-            raise WindowProfileValidationError("模板名称不能超过 100 个字符")
+            raise WindowProfileValidationError(
+                f"模板名称不能超过 100 个字符 (模板: '{profile.name}', 字段: name, 值长度: {len(profile.name)})"
+            )
 
         ok, msg = validate_timezone(profile.timezone)
         if not ok:
-            raise WindowProfileValidationError(msg)
+            raise WindowProfileValidationError(
+                f"{msg} (模板: '{profile.name}', 字段: timezone, 值: '{profile.timezone}')"
+            )
 
         ok, msg = validate_window_times(profile.window_start, profile.window_end)
         if not ok:
-            raise WindowProfileValidationError(msg)
+            raise WindowProfileValidationError(
+                f"{msg} (模板: '{profile.name}', 字段: window_start/window_end, "
+                f"值: start='{profile.window_start}', end='{profile.window_end}')"
+            )
 
         ok, msg = validate_business_lines(profile.business_lines, valid_business_lines)
         if not ok:
-            raise WindowProfileValidationError(msg)
+            raise WindowProfileValidationError(
+                f"{msg} (模板: '{profile.name}', 字段: business_lines, 值: {profile.business_lines})"
+            )
 
     def get_profile(self, name: str) -> Optional[WindowProfile]:
         for p in self.profiles:
@@ -583,17 +605,12 @@ class WindowProfileStore:
                 f"请先创建模板或使用其他模板。"
             )
 
+        self.validate_profile(profile, valid_business_lines)
+
         if expected_fingerprint and not force:
             self.check_profile_modified(profile, expected_fingerprint)
 
         self.check_already_applied(profile_name, batch_id)
-
-        if valid_business_lines is not None:
-            ok, msg = validate_business_lines(profile.business_lines, valid_business_lines)
-            if not ok:
-                raise WindowProfileValidationError(
-                    f"模板 '{profile_name}' 的业务线与批次不兼容: {msg}"
-                )
 
         snapshot = WindowProfileSnapshot(
             profile_name=profile.name,
@@ -745,8 +762,6 @@ class WindowProfileStore:
             "conflicts": [],
         }
 
-        existing_names = {p.name for p in self.list_profiles()}
-
         for profile in bundle.profiles:
             try:
                 self.validate_profile(profile)
@@ -755,8 +770,13 @@ class WindowProfileStore:
                     "name": profile.name,
                     "error": str(e),
                 })
-                continue
+                raise WindowProfileValidationError(
+                    f"导入的模板校验失败，已阻止整个导入。{str(e)}"
+                )
 
+        existing_names = {p.name for p in self.list_profiles()}
+
+        for profile in bundle.profiles:
             if profile.name in existing_names:
                 if mode == "replace":
                     if force:

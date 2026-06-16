@@ -968,7 +968,10 @@ class TestWindowProfileBusinessLineValidation(unittest.TestCase):
             env_overrides=self.env,
         )
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("业务线与批次不兼容", r.stderr)
+        self.assertIn("bad_bl", r.stderr)
+        self.assertIn("business_lines", r.stderr)
+        self.assertIn("nonexistent_system", r.stderr)
+        self.assertIn("未在配置中声明", r.stderr)
 
     def test_apply_profile_with_compatible_business_lines_succeeds(self):
         run_cli(
@@ -1080,7 +1083,7 @@ class TestWindowProfileImportConflictBlocking(unittest.TestCase):
         self.assertIn("+09:00", r.stdout)
         self.assertIn("目标版本", r.stdout)
 
-    def test_import_invalid_profile_in_bundle_reports_conflict(self):
+    def test_import_invalid_profile_in_bundle_blocks_entire_import(self):
         run_cli(
             "window", "create", "valid_prof",
             "--window-start", self.start,
@@ -1117,9 +1120,14 @@ class TestWindowProfileImportConflictBlocking(unittest.TestCase):
             "--actor", "importer",
             env_overrides=self.env2,
         )
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("冲突", r.stdout)
-        self.assertIn("bad_tz_prof", r.stdout)
+        self.assertNotEqual(r.returncode, 0, "bundle 中含非法时区 profile 应整体阻止导入")
+        self.assertIn("bad_tz_prof", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("INVALID_TZ", r.stderr)
+        self.assertIn("阻止", r.stderr)
+
+        r_list = run_cli("window", "list", env_overrides=self.env2)
+        self.assertNotIn("valid_prof", r_list.stdout, "合法 profile 也不应被导入（整体阻止）")
 
 
 class TestWindowProfileCrossProcessFull(unittest.TestCase):
@@ -1419,6 +1427,244 @@ class TestWindowProfileAuditLogQuery(unittest.TestCase):
         )
         self.assertIn("导出", r.stdout)
         self.assertIn("exporter", r.stdout)
+
+
+class TestWindowProfileTamperedTemplateBlocking(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_tamper_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=2)).isoformat()
+        self.window_end = now.isoformat()
+
+        run_cli(
+            "window", "create", "tpl_before_tamper",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "+08:00",
+            "--business-line", "order_system",
+            "--notes", "模板创建时是合法的",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "good.dat", "content": b"good content"},
+            ],
+            valid_bl=["order_system"],
+        )
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _tamper_profiles_json(self, bad_timezone: str):
+        profiles_path = self.env["BACKUP_AUDIT_WINDOW_PROFILES"]
+        with open(profiles_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for p in data["profiles"]:
+            if p["name"] == "tpl_before_tamper":
+                p["timezone"] = bad_timezone
+                break
+        with open(profiles_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def test_window_apply_fails_after_hand_tampering_timezone(self):
+        self._tamper_profiles_json("+15:00")
+
+        r = run_cli(
+            "window", "apply", "tpl_before_tamper",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "手工篡改时区为 +15:00 后 apply 应失败")
+        self.assertIn("tpl_before_tamper", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("+15:00", r.stderr)
+
+        snap_dir = self.env["BACKUP_AUDIT_WINDOW_PROFILE_SNAPSHOTS"]
+        snap_files = []
+        if os.path.isdir(snap_dir):
+            snap_files = os.listdir(snap_dir)
+        self.assertEqual(len(snap_files), 0, "非法模板不应产生快照文件")
+
+        app_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_APPLICATIONS"]
+        with open(app_path, "r", encoding="utf-8") as f:
+            app_data = json.load(f)
+        self.assertEqual(len(app_data.get("applications", [])), 0, "非法模板不应产生应用记录")
+
+        log_path = self.env["BACKUP_AUDIT_WINDOW_PROFILE_LOG"]
+        with open(log_path, "r", encoding="utf-8") as f:
+            log_data = json.load(f)
+        for entry in log_data.get("log", []):
+            self.assertNotEqual(
+                entry.get("action"),
+                "window_profile_apply",
+                "非法模板不应产生 apply 审计日志",
+            )
+
+    def test_import_with_window_profile_fails_after_hand_tampering(self):
+        self._tamper_profiles_json("+15:00")
+
+        backup_dir2 = os.path.join(self.tmp_dir, "backup2")
+        os.makedirs(backup_dir2)
+        make_temp_backup(
+            backup_dir2,
+            [{"name": "file.dat", "content": b"content"}],
+            batch_id="TEST-002",
+            valid_bl=["order_system"],
+        )
+
+        r = run_cli(
+            "import",
+            os.path.join(backup_dir2, "manifest.json"),
+            backup_dir2,
+            "--window-profile", "tpl_before_tamper",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "手工篡改时区后 import --window-profile 应失败")
+        self.assertIn("tpl_before_tamper", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("+15:00", r.stderr)
+
+    def test_window_apply_fails_with_tampered_invalid_format(self):
+        self._tamper_profiles_json("BADTZ")
+
+        r = run_cli(
+            "window", "apply", "tpl_before_tamper",
+            self.backup_dir,
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+        self.assertNotEqual(r.returncode, 0, "手工篡改为格式非法时区后 apply 应失败")
+        self.assertIn("tpl_before_tamper", r.stderr)
+        self.assertIn("timezone", r.stderr)
+        self.assertIn("BADTZ", r.stderr)
+
+
+class TestWindowProfileValidCrossProcess(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="audit_win_validcp_")
+        self.env = make_isolated_config(self.tmp_dir)
+        self.backup_dir = os.path.join(self.tmp_dir, "backup")
+        os.makedirs(self.backup_dir)
+
+        now = datetime.now()
+        self.window_start = (now - timedelta(hours=4)).isoformat()
+        self.window_end = (now - timedelta(hours=1)).isoformat()
+
+        run_cli(
+            "window", "create", "valid_cross",
+            "--window-start", self.window_start,
+            "--window-end", self.window_end,
+            "--timezone", "-05:00",
+            "--business-line", "order_system",
+            "--business-line", "payment_system",
+            "--notes", "合法跨进程测试模板",
+            "--actor", "admin",
+            env_overrides=self.env,
+        )
+
+        make_temp_backup(
+            self.backup_dir,
+            [
+                {"name": "inside.dat", "content": b"inside window", "age_minutes": 150},
+                {"name": "outside.dat", "content": b"outside window", "age_minutes": 60 * 24 * 5},
+            ],
+            valid_bl=["order_system", "payment_system"],
+        )
+
+        run_cli(
+            "import",
+            os.path.join(self.backup_dir, "manifest.json"),
+            self.backup_dir,
+            "--window-profile", "valid_cross",
+            "--actor", "ops",
+            env_overrides=self.env,
+        )
+
+        run_cli(
+            "precheck", self.backup_dir,
+            env_overrides=self.env,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_valid_resume_shows_all_template_info(self):
+        r = run_cli(
+            "resume", self.backup_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"resume 应成功: {r.stderr}")
+        self.assertIn("窗口模板", r.stdout)
+        self.assertIn("valid_cross", r.stdout)
+        self.assertIn("-05:00", r.stdout)
+        self.assertIn("合法跨进程测试模板", r.stdout)
+        self.assertIn("ops", r.stdout)
+        self.assertIn("v1", r.stdout)
+
+    def test_valid_show_profile_and_applications(self):
+        r = run_cli(
+            "window", "show", "valid_cross",
+            "--show-log",
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("valid_cross", r.stdout)
+        self.assertIn("-05:00", r.stdout)
+        self.assertIn("合法跨进程测试模板", r.stdout)
+        self.assertIn("应用记录", r.stdout)
+        self.assertIn("TEST-001", r.stdout)
+        self.assertIn("模板审计日志", r.stdout)
+        self.assertIn("创建", r.stdout)
+        self.assertIn("应用", r.stdout)
+        self.assertIn("admin", r.stdout)
+        self.assertIn("ops", r.stdout)
+
+    def test_valid_export_includes_full_template_data(self):
+        reports_dir = os.path.join(self.tmp_dir, "reports")
+        r = run_cli(
+            "export", self.backup_dir,
+            "--output", reports_dir,
+            env_overrides=self.env,
+        )
+        self.assertEqual(r.returncode, 0, f"export 应成功: {r.stderr}")
+
+        json_path = os.path.join(reports_dir, "audit_report_TEST-001.json")
+        self.assertTrue(os.path.exists(json_path), "应生成 JSON 报告")
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+        self.assertIsNotNone(report.get("window_profile"), "报告应含 window_profile 节")
+        wp = report["window_profile"]
+        self.assertEqual(wp["profile_name"], "valid_cross")
+        self.assertEqual(wp["profile_version"], 1)
+        self.assertEqual(wp["timezone"], "-05:00")
+        self.assertEqual(wp["notes"], "合法跨进程测试模板")
+        self.assertEqual(wp["applied_by"], "ops")
+        self.assertEqual(wp["window_start"], self.window_start)
+        self.assertEqual(wp["window_end"], self.window_end)
+        self.assertEqual(wp["business_lines"], ["order_system", "payment_system"])
+        self.assertIn("profile_fingerprint", wp)
+
+        out_window_issues = [i for i in report["all_issues"] if i["type"] == "outside_backup_window"]
+        self.assertTrue(len(out_window_issues) > 0, "应检测到 outside_backup_window 问题")
+        for issue in out_window_issues:
+            self.assertIn("(-05:00)", issue["message"], "问题消息应含模板时区")
 
 
 if __name__ == "__main__":
