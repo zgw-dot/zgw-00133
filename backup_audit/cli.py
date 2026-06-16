@@ -36,6 +36,8 @@ from .snapshot import (
     SnapshotStore,
     SnapshotRecord,
     OperationSnapshot,
+    SnapshotSealedError,
+    SnapshotNameConflictError,
     build_config_summary,
 )
 
@@ -110,6 +112,7 @@ def _record_to_snapshot(
     transaction_id: Optional[str] = None,
     affected_batches: Optional[List[Dict[str, object]]] = None,
     store: Optional[WaiverStore] = None,
+    allow_sealed_append: bool = False,
 ) -> None:
     if not snapshot_name:
         return
@@ -129,11 +132,23 @@ def _record_to_snapshot(
         if existing is None:
             snap_store.create(snapshot_name, record)
         else:
+            if existing.sealed and not allow_sealed_append:
+                safe_print(
+                    f"  [WARN] 快照 '{snapshot_name}' 已封版 ({existing.sealed_at})，"
+                    f"未使用 --append，跳过记录。"
+                    f"如需续写封版快照，请在命令中添加 --snapshot-append。",
+                    file=sys.stderr,
+                )
+                return
             if not success:
                 gap_warnings = snap_store.validate_failed_records(snapshot_name)
                 if not transaction_id and not output_summary.strip():
                     record.gap_warning = "失败命令缺少事务ID和输出摘要，无法核对结果。"
-            snap_store.append(snapshot_name, record)
+            snap_store.append(snapshot_name, record, allow_sealed=existing.sealed)
+    except SnapshotSealedError as e:
+        safe_print(f"  [WARN] 封版快照写入被拒: {e}", file=sys.stderr)
+    except SnapshotNameConflictError as e:
+        safe_print(f"  [WARN] 快照名称冲突: {e}", file=sys.stderr)
     except Exception as e:
         safe_print(f"  [WARN] 快照记录失败: {e}", file=sys.stderr)
 
@@ -894,13 +909,15 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
     input_path = os.path.abspath(args.input)
     backup_dir = getattr(args, "backup_dir", None)
     snapshot_name = getattr(args, "snapshot", None)
+    snapshot_append = getattr(args, "snapshot_append", False)
 
     if getattr(args, "dry_run", False):
         try:
             precheck = store.precheck_import(input_path, mode=args.mode)
         except Exception as e:
             safe_print(f"错误: 预演失败 - {e}", file=sys.stderr)
-            _record_to_snapshot(snapshot_name, "waiver import --dry-run", False, str(e), store=store)
+            _record_to_snapshot(snapshot_name, "waiver import --dry-run", False, str(e), store=store,
+                                allow_sealed_append=snapshot_append)
             return 20
 
         affected_batches: Optional[List[Dict[str, object]]] = None
@@ -920,7 +937,8 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
                          f"已存在:{len(precheck.existing_rules)}", f"过期:{len(precheck.expired_rules)}"]
         _record_to_snapshot(snapshot_name, "waiver import --dry-run", precheck.can_commit,
                             "; ".join(summary_parts),
-                            affected_batches=affected_batches, store=store)
+                            affected_batches=affected_batches, store=store,
+                            allow_sealed_append=snapshot_append)
         return 0 if precheck.can_commit else 21
 
     try:
@@ -947,15 +965,18 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
         )
     except WaiverValidationError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
-        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store,
+                            allow_sealed_append=snapshot_append)
         return 16
     except WaiverTransactionError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
-        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store,
+                            allow_sealed_append=snapshot_append)
         return 22
     except (json.JSONDecodeError, KeyError) as e:
         safe_print(f"错误: 导入文件格式无效 - {e}", file=sys.stderr)
-        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store)
+        _record_to_snapshot(snapshot_name, "waiver import", False, str(e), store=store,
+                            allow_sealed_append=snapshot_append)
         return 17
 
     tx_id = result.get("transaction_id")
@@ -986,7 +1007,8 @@ def cmd_waiver_import(args: argparse.Namespace) -> int:
 
     summary = f"模式:{args.mode}; 添加:{len(result['added'])}; 跳过:{len(result['skipped'])}; 冲突:{len(result['conflicts'])}"
     _record_to_snapshot(snapshot_name, "waiver import", True, summary,
-                        transaction_id=tx_id, affected_batches=actual_affected, store=store)
+                        transaction_id=tx_id, affected_batches=actual_affected, store=store,
+                        allow_sealed_append=snapshot_append)
     return 0
 
 
@@ -995,10 +1017,12 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
     last_tx = store.get_last_committed_transaction()
     backup_dir = getattr(args, "backup_dir", None)
     snapshot_name = getattr(args, "snapshot", None)
+    snapshot_append = getattr(args, "snapshot_append", False)
 
     if not last_tx:
         safe_print("错误: 没有可回滚的导入事务。", file=sys.stderr)
-        _record_to_snapshot(snapshot_name, "waiver rollback", False, "没有可回滚的导入事务", store=store)
+        _record_to_snapshot(snapshot_name, "waiver rollback", False, "没有可回滚的导入事务", store=store,
+                            allow_sealed_append=snapshot_append)
         return 23
 
     safe_print(f"即将回滚最近一次导入事务:")
@@ -1028,7 +1052,8 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
     except WaiverTransactionError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
         _record_to_snapshot(snapshot_name, "waiver rollback", False, str(e),
-                            transaction_id=last_tx.id, store=store)
+                            transaction_id=last_tx.id, store=store,
+                            allow_sealed_append=snapshot_append)
         return 25
 
     safe_print(f"回滚完成:")
@@ -1057,7 +1082,72 @@ def cmd_waiver_rollback(args: argparse.Namespace) -> int:
     rb_summary = f"移除:{result['removed_count']}; 保留手工:{result['manual_rules_preserved']}"
     _record_to_snapshot(snapshot_name, "waiver rollback", True, rb_summary,
                         transaction_id=result["transaction_id"],
-                        affected_batches=post_affected, store=store)
+                        affected_batches=post_affected, store=store,
+                        allow_sealed_append=snapshot_append)
+    return 0
+
+
+def cmd_snapshot_create(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    try:
+        record = None
+        if getattr(args, "command", None) or getattr(args, "summary", None):
+            record = SnapshotRecord(
+                command=getattr(args, "command", "snapshot create"),
+                timestamp=datetime.now().isoformat(),
+                success=True,
+                output_summary=getattr(args, "summary", "显式创建快照"),
+            )
+        snapshot = snap_store.create(args.name, record)
+        safe_print(f"快照已创建: {snapshot.name}")
+        safe_print(f"  创建时间: {snapshot.created_at}")
+        safe_print(f"  记录条数: {len(snapshot.records)}")
+        safe_print(f"  配置目录指纹: {snapshot.config_dir_fingerprint}")
+        safe_print()
+        safe_print("提示: 完成操作后使用 'snapshot seal' 封版，封版后只能通过 --append 续写或 --fork-from 分叉。")
+    except SnapshotNameConflictError as e:
+        safe_print(f"错误: {e}", file=sys.stderr)
+        return 31
+    return 0
+
+
+def cmd_snapshot_seal(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    try:
+        snapshot = snap_store.seal(args.name, actor=getattr(args, "actor", ""))
+        safe_print(f"快照已封版: {snapshot.name}")
+        safe_print(f"  封版时间: {snapshot.sealed_at}")
+        safe_print(f"  封版人: {snapshot.meta.get('sealed_by', '未知')}")
+        safe_print(f"  记录条数: {len(snapshot.records)}")
+        safe_print()
+        safe_print("封版后: 只能通过 --append 续写，或通过 --fork-from 分叉出新快照。")
+        safe_print("封版快照在重启后仍可通过 show/export 查看。")
+    except ValueError as e:
+        safe_print(f"错误: {e}", file=sys.stderr)
+        return 32
+    return 0
+
+
+def cmd_snapshot_fork(args: argparse.Namespace) -> int:
+    snap_store = SnapshotStore()
+    try:
+        record = None
+        if getattr(args, "command", None) or getattr(args, "summary", None):
+            record = SnapshotRecord(
+                command=getattr(args, "command", f"snapshot fork --fork-from {args.source}"),
+                timestamp=datetime.now().isoformat(),
+                success=True,
+                output_summary=getattr(args, "summary", "从源快照分叉"),
+            )
+        snapshot = snap_store.fork_from(args.source, args.new_name, record)
+        safe_print(f"快照已分叉: {args.source} → {args.new_name}")
+        safe_print(f"  创建时间: {snapshot.created_at}")
+        safe_print(f"  继承记录条数: {len(snapshot.records)}")
+        safe_print(f"  分叉自: {args.source}")
+        safe_print(f"  配置目录指纹: {snapshot.config_dir_fingerprint}")
+    except (ValueError, SnapshotNameConflictError) as e:
+        safe_print(f"错误: {e}", file=sys.stderr)
+        return 33
     return 0
 
 
@@ -1069,7 +1159,9 @@ def cmd_snapshot_list(args: argparse.Namespace) -> int:
         return 0
     safe_print(f"=== 操作快照列表 ({len(snapshots)} 个) ===")
     for s in snapshots:
-        safe_print(f"  * {s['name']}  记录:{s['record_count']}  创建:{s['created_at']}  更新:{s['updated_at']}")
+        seal_tag = " [封版]" if s.get("sealed") else ""
+        fork_tag = f" [分叉自:{s['forked_from']}]" if s.get("forked_from") else ""
+        safe_print(f"  * {s['name']}{seal_tag}{fork_tag}  记录:{s['record_count']}  创建:{s['created_at']}  更新:{s['updated_at']}")
     return 0
 
 
@@ -1084,7 +1176,29 @@ def cmd_snapshot_show(args: argparse.Namespace) -> int:
     safe_print(f"  创建时间: {snapshot.created_at}")
     safe_print(f"  最后更新: {snapshot.updated_at}")
     safe_print(f"  记录条数: {len(snapshot.records)}")
+
+    if snapshot.sealed:
+        safe_print(f"  封版状态: 已封版 (封版时间: {snapshot.sealed_at})")
+        safe_print(f"  封版人: {snapshot.meta.get('sealed_by', '未知')}")
+    else:
+        safe_print(f"  封版状态: 未封版 (可追加)")
+
+    if snapshot.forked_from:
+        safe_print(f"  分叉自: {snapshot.forked_from}")
+
+    if snapshot.config_dir_fingerprint:
+        safe_print(f"  配置目录指纹: {snapshot.config_dir_fingerprint}")
+
     safe_print()
+
+    store = WaiverStore()
+
+    staleness = snap_store.check_staleness(args.name, store)
+    if staleness:
+        safe_print("=== ⚠ 失效提示 ===")
+        for sw in staleness:
+            safe_print(f"  [{sw['type']}] {sw['message']}")
+        safe_print()
 
     for i, rec in enumerate(snapshot.records, 1):
         status = "[OK]" if rec.success else "[FAIL]"
@@ -1105,7 +1219,6 @@ def cmd_snapshot_show(args: argparse.Namespace) -> int:
         safe_print()
 
     if getattr(args, "validate", False):
-        store = WaiverStore()
         tx_warnings = snap_store.validate_transactions(args.name, store)
         fail_warnings = snap_store.validate_failed_records(args.name)
         all_warnings = tx_warnings + fail_warnings
@@ -1120,25 +1233,32 @@ def cmd_snapshot_show(args: argparse.Namespace) -> int:
 
 def cmd_snapshot_export(args: argparse.Namespace) -> int:
     snap_store = SnapshotStore()
+    store = WaiverStore()
     try:
         if args.format == "markdown":
-            content = snap_store.export_markdown(args.name)
+            content = snap_store.export_markdown(args.name, store)
         else:
-            snapshot = snap_store.load(args.name)
-            if snapshot is None:
-                safe_print(f"错误: 快照 '{args.name}' 不存在。", file=sys.stderr)
-                return 30
-            content = json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2)
+            content = snap_store.export_json(args.name, store)
     except ValueError as e:
         safe_print(f"错误: {e}", file=sys.stderr)
         return 30
 
-    if args.output:
-        output_path = os.path.abspath(args.output)
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
+    output_path = getattr(args, "output", None)
+    if output_path:
+        abs_output = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(abs_output) or ".", exist_ok=True)
+        with open(abs_output, "w", encoding="utf-8") as f:
             f.write(content)
-        safe_print(f"快照已导出: {output_path}")
+        snap_store.record_export(args.name, args.format, abs_output)
+        safe_print(f"快照已导出: {abs_output}")
+
+        staleness = snap_store.check_staleness(args.name, store)
+        if staleness:
+            safe_print()
+            safe_print("=== ⚠ 导出失效提示 ===")
+            for sw in staleness:
+                safe_print(f"  [{sw['type']}] {sw['message']}")
+            safe_print("  建议在消除上述问题后重新导出。")
     else:
         safe_print(content)
     return 0
@@ -1353,6 +1473,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="操作快照名称，自动记录本次命令的关键输出、事务ID、受影响批次到快照",
     )
+    p_waiver_import.add_argument(
+        "--snapshot-append",
+        action="store_true",
+        help="允许向已封版的快照追加记录（需同时指定 --snapshot）",
+    )
     p_waiver_import.set_defaults(func=cmd_waiver_import)
 
     p_waiver_rollback = waiver_sub.add_parser(
@@ -1370,6 +1495,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshot",
         default=None,
         help="操作快照名称，自动记录本次命令的关键输出、事务ID、受影响批次到快照",
+    )
+    p_waiver_rollback.add_argument(
+        "--snapshot-append",
+        action="store_true",
+        help="允许向已封版的快照追加记录（需同时指定 --snapshot）",
     )
     p_waiver_rollback.set_defaults(func=cmd_waiver_rollback)
 
@@ -1394,15 +1524,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_waiver_snapshot = waiver_sub.add_parser("snapshot", help="操作快照管理（记录和查看命令操作历史）")
     snapshot_sub = p_waiver_snapshot.add_subparsers(dest="snapshot_command", help="快照子命令")
 
+    p_snap_create = snapshot_sub.add_parser("create", help="显式创建操作快照（运维起名后创建）")
+    p_snap_create.add_argument("name", help="快照名称")
+    p_snap_create.add_argument("--summary", default=None, help="创建说明")
+    p_snap_create.add_argument("--command", default=None, help="关联命令")
+    p_snap_create.set_defaults(func=cmd_snapshot_create)
+
+    p_snap_seal = snapshot_sub.add_parser("seal", help="封版快照（封版后只能 --append 续写或 --fork-from 分叉）")
+    p_snap_seal.add_argument("name", help="快照名称")
+    p_snap_seal.add_argument("--actor", default="", help="封版操作人")
+    p_snap_seal.set_defaults(func=cmd_snapshot_seal)
+
+    p_snap_fork = snapshot_sub.add_parser("fork", help="从已有快照分叉出新快照")
+    p_snap_fork.add_argument("--fork-from", dest="source", required=True, help="源快照名称")
+    p_snap_fork.add_argument("new_name", help="新快照名称")
+    p_snap_fork.add_argument("--summary", default=None, help="分叉说明")
+    p_snap_fork.add_argument("--command", default=None, help="关联命令")
+    p_snap_fork.set_defaults(func=cmd_snapshot_fork)
+
     p_snap_list = snapshot_sub.add_parser("list", help="列出所有操作快照")
     p_snap_list.set_defaults(func=cmd_snapshot_list)
 
-    p_snap_show = snapshot_sub.add_parser("show", help="查看快照详情")
+    p_snap_show = snapshot_sub.add_parser("show", help="查看快照详情（含失效提示）")
     p_snap_show.add_argument("name", help="快照名称")
     p_snap_show.add_argument("--validate", action="store_true", help="校验快照中的事务是否仍有效")
     p_snap_show.set_defaults(func=cmd_snapshot_show)
 
-    p_snap_export = snapshot_sub.add_parser("export", help="导出快照为 Markdown 或 JSON 文件")
+    p_snap_export = snapshot_sub.add_parser("export", help="导出快照为 Markdown 或 JSON 文件（含事务校验、配置摘要、失效提示）")
     p_snap_export.add_argument("name", help="快照名称")
     p_snap_export.add_argument("--format", choices=["markdown", "json"], default="markdown", help="导出格式 (默认: markdown)")
     p_snap_export.add_argument("--output", default=None, help="输出文件路径 (默认输出到终端)")
