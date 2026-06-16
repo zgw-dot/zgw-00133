@@ -37,6 +37,61 @@ from .waiver import (
 STORAGE_DIR_NAME = ".audit_state"
 
 
+def safe_print(*args, **kwargs) -> None:
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        file = kwargs.get("file", sys.stdout)
+        text = sep.join(str(a) for a in args) + end
+        file.buffer.write(text.encode(sys.stdout.encoding, errors="replace"))
+        file.flush()
+
+
+def analyze_affected_batches(
+    backup_dir: str,
+    store: WaiverStore,
+    rules_to_analyze: Optional[List[WaiverRule]] = None,
+) -> List[Dict[str, object]]:
+    storage_dir = get_storage_dir(backup_dir)
+    if not os.path.isdir(storage_dir):
+        return []
+
+    pattern = os.path.join(storage_dir, "batch_*.json")
+    batch_files = sorted(glob.glob(pattern))
+    if not batch_files:
+        return []
+
+    results: List[Dict[str, object]] = []
+    effective_rules = rules_to_analyze or store.list_rules()
+
+    for bf in batch_files:
+        try:
+            batch = AuditBatch.load(bf)
+        except Exception:
+            continue
+
+        affected = 0
+        affected_issue_ids: List[str] = []
+        for issue in batch.issues:
+            mf = get_manifest_file_for_issue(batch, issue)
+            for rule in effective_rules:
+                if rule.matches(issue, mf):
+                    affected += 1
+                    affected_issue_ids.append(issue.id)
+                    break
+
+        if affected > 0:
+            results.append({
+                "batch_id": batch.id,
+                "affected_count": affected,
+                "sample_issue_ids": affected_issue_ids[:5],
+            })
+
+    return results
+
+
 def get_storage_dir(backup_dir: str) -> str:
     return os.path.join(backup_dir, STORAGE_DIR_NAME)
 
@@ -734,13 +789,13 @@ def cmd_waiver_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_precheck_result(precheck) -> None:
-    print(f"=== 导入预演结果 ===")
-    print(f"  源文件: {precheck.source_file}")
-    print(f"  导入模式: {precheck.mode}")
-    print(f"  文件中规则总数: {precheck.total_rules}")
-    print()
-    print(f"  新增规则: {len(precheck.new_rules)}")
+def _print_precheck_result(precheck, affected_batches: Optional[List[Dict[str, object]]] = None) -> None:
+    safe_print(f"=== 导入预演结果 ===")
+    safe_print(f"  源文件: {precheck.source_file}")
+    safe_print(f"  导入模式: {precheck.mode}")
+    safe_print(f"  文件中规则总数: {precheck.total_rules}")
+    safe_print()
+    safe_print(f"  新增规则: {len(precheck.new_rules)}")
     for r in precheck.new_rules:
         desc = []
         if r.path_prefix:
@@ -751,130 +806,188 @@ def _print_precheck_result(precheck) -> None:
             desc.append(f"类型={r.issue_type.value}")
         if r.severity:
             desc.append(f"严重度={r.severity.value}")
-        print(f"    + {r.id}: {r.reason} ({', '.join(desc)})")
-    print()
-    print(f"  已存在 (跳过): {len(precheck.existing_rules)}")
+        safe_print(f"    + {r.id}: {r.reason} ({', '.join(desc)})")
+    safe_print()
+    safe_print(f"  已存在 (跳过): {len(precheck.existing_rules)}")
     for r in precheck.existing_rules:
-        print(f"    = {r.id}: {r.reason}")
-    print()
-    print(f"  冲突/风险 (跳过): {len(precheck.conflicting_rules)}")
+        safe_print(f"    = {r.id}: {r.reason}")
+    safe_print()
+    safe_print(f"  冲突/风险 (跳过): {len(precheck.conflicting_rules)}")
     for c in precheck.conflicting_rules:
         rule = c["rule"]
         reasons = "; ".join(c["conflict_reasons"])
-        print(f"    ! {rule['id']}: {reasons}")
-    print()
-    print(f"  已过期 (跳过): {len(precheck.expired_rules)}")
+        safe_print(f"    ! {rule['id']}: {reasons}")
+    safe_print()
+    safe_print(f"  已过期 (跳过): {len(precheck.expired_rules)}")
     for r in precheck.expired_rules:
-        print(f"    e {r.id}: 过期于 {r.expires_at}")
-    print()
-    print(f"  无效规则: {len(precheck.invalid_rules)}")
+        safe_print(f"    e {r.id}: 过期于 {r.expires_at}")
+    safe_print()
+    safe_print(f"  无效规则: {len(precheck.invalid_rules)}")
     for inv in precheck.invalid_rules:
-        print(f"    x 索引 {inv['index']}: {inv['error']}")
-    print()
+        safe_print(f"    x 索引 {inv['index']}: {inv['error']}")
+    safe_print()
     if precheck.file_errors:
-        print(f"  文件错误: {len(precheck.file_errors)}")
+        safe_print(f"  文件错误: {len(precheck.file_errors)}")
         for err in precheck.file_errors:
-            print(f"    X {err}")
-        print()
+            safe_print(f"    X {err}")
+        safe_print()
+    if affected_batches:
+        safe_print(f"  下次 precheck/rescan 受影响批次: {len(affected_batches)}")
+        for ab in affected_batches:
+            safe_print(f"    * 批次 {ab['batch_id']}: 影响 {ab['affected_count']} 个问题")
+        safe_print()
+    elif hasattr(precheck, "affected_batches") and precheck.affected_batches:
+        safe_print(f"  下次 precheck/rescan 受影响批次: {len(precheck.affected_batches)}")
+        for bid in precheck.affected_batches:
+            safe_print(f"    * {bid}")
+        safe_print()
     if precheck.can_commit:
-        print(f"  ✅ 预演通过，可以执行导入。")
+        safe_print(f"  [OK] 预演通过，可以执行导入。")
     else:
-        print(f"  ❌ 预演未通过，存在错误，无法执行导入。")
+        safe_print(f"  [FAIL] 预演未通过，存在错误，无法执行导入。")
 
 
 def cmd_waiver_import(args: argparse.Namespace) -> int:
     store = WaiverStore()
     input_path = os.path.abspath(args.input)
+    backup_dir = getattr(args, "backup_dir", None)
 
     if getattr(args, "dry_run", False):
         try:
             precheck = store.precheck_import(input_path, mode=args.mode)
         except Exception as e:
-            print(f"错误: 预演失败 - {e}", file=sys.stderr)
+            safe_print(f"错误: 预演失败 - {e}", file=sys.stderr)
             return 20
-        _print_precheck_result(precheck)
+
+        affected_batches: Optional[List[Dict[str, object]]] = None
+        if backup_dir and precheck.new_rules:
+            temp_rules = store.rules + precheck.new_rules
+            temp_store = WaiverStore.__new__(WaiverStore)
+            temp_store.rules = temp_rules
+            try:
+                affected_batches = analyze_affected_batches(backup_dir, temp_store)
+                precheck.affected_batches = [str(ab["batch_id"]) for ab in affected_batches]
+            except Exception:
+                pass
+
+        _print_precheck_result(precheck, affected_batches)
         return 0 if precheck.can_commit else 21
 
     try:
+        affected_batches: Optional[List[Dict[str, object]]] = None
+        if backup_dir:
+            temp_rules = store.rules[:]
+            precheck = store.precheck_import(input_path, mode=args.mode)
+            if args.mode == "replace":
+                temp_rules = []
+            temp_rules.extend(precheck.new_rules)
+            temp_store = WaiverStore.__new__(WaiverStore)
+            temp_store.rules = temp_rules
+            try:
+                affected_batches = analyze_affected_batches(backup_dir, temp_store)
+            except Exception:
+                affected_batches = None
+
         result = store.import_rules(
             input_path,
             args.actor,
             mode=args.mode,
             replace_confirm_manual_delete=getattr(args, "replace_confirm_manual_delete", False),
+            affected_batches=affected_batches,
         )
     except WaiverValidationError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        safe_print(f"错误: {e}", file=sys.stderr)
         return 16
     except WaiverTransactionError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        safe_print(f"错误: {e}", file=sys.stderr)
         return 22
     except (json.JSONDecodeError, KeyError) as e:
-        print(f"错误: 导入文件格式无效 - {e}", file=sys.stderr)
+        safe_print(f"错误: 导入文件格式无效 - {e}", file=sys.stderr)
         return 17
 
-    print(f"豁免规则导入完成 (模式: {args.mode})")
-    print(f"  事务ID: {result.get('transaction_id', 'N/A')}")
-    print(f"  操作人: {args.actor}")
-    print(f"  文件中规则数: {result['total_imported']}")
-    print(f"  成功添加: {len(result['added'])}")
+    safe_print(f"豁免规则导入完成 (模式: {args.mode})")
+    safe_print(f"  事务ID: {result.get('transaction_id', 'N/A')}")
+    safe_print(f"  操作人: {args.actor}")
+    safe_print(f"  文件中规则数: {result['total_imported']}")
+    safe_print(f"  成功添加: {len(result['added'])}")
     if result["added"]:
         for rid in result["added"]:
-            print(f"    + {rid}")
+            safe_print(f"    + {rid}")
     if result["skipped"]:
-        print(f"  跳过 (已存在): {len(result['skipped'])}")
+        safe_print(f"  跳过 (已存在): {len(result['skipped'])}")
         for rid in result["skipped"]:
-            print(f"    = {rid}")
+            safe_print(f"    = {rid}")
     if result["conflicts"]:
-        print(f"  跳过 (冲突/风险): {len(result['conflicts'])}")
+        safe_print(f"  跳过 (冲突/风险): {len(result['conflicts'])}")
         for rid in result["conflicts"]:
-            print(f"    ! {rid}")
-    print()
-    print("提示: 如需回滚此次导入，请执行:")
-    print(f"  python backup_audit_cli.py waiver rollback --actor {args.actor}")
+            safe_print(f"    ! {rid}")
+    if result.get("affected_batches"):
+        safe_print(f"  波及批次: {len(result['affected_batches'])}")
+        for ab in result["affected_batches"]:
+            safe_print(f"    * 批次 {ab['batch_id']}: 影响 {ab['affected_count']} 个问题")
+    safe_print()
+    safe_print("提示: 如需回滚此次导入，请执行:")
+    safe_print(f"  python backup_audit_cli.py waiver rollback --actor {args.actor} --yes")
     return 0
 
 
 def cmd_waiver_rollback(args: argparse.Namespace) -> int:
     store = WaiverStore()
     last_tx = store.get_last_committed_transaction()
+    backup_dir = getattr(args, "backup_dir", None)
 
     if not last_tx:
-        print("错误: 没有可回滚的导入事务。", file=sys.stderr)
+        safe_print("错误: 没有可回滚的导入事务。", file=sys.stderr)
         return 23
 
-    print(f"即将回滚最近一次导入事务:")
-    print(f"  事务ID: {last_tx.id}")
-    print(f"  操作人: {last_tx.actor}")
-    print(f"  时间: {last_tx.timestamp}")
-    print(f"  模式: {last_tx.mode}")
-    print(f"  源文件: {last_tx.source_file}")
-    print(f"  导入规则数: {len(last_tx.imported_rule_ids)}")
-    print()
-    print("回滚将:")
-    print(f"  - 恢复到导入前的规则状态（共 {len(last_tx.rules_before)} 条规则）")
-    print(f"  - 保留期间新增的手工规则")
-    print(f"  - 标记事务状态为已回滚")
-    print()
+    safe_print(f"即将回滚最近一次导入事务:")
+    safe_print(f"  事务ID: {last_tx.id}")
+    safe_print(f"  操作人: {last_tx.actor}")
+    safe_print(f"  时间: {last_tx.timestamp}")
+    safe_print(f"  模式: {last_tx.mode}")
+    safe_print(f"  源文件: {last_tx.source_file}")
+    safe_print(f"  导入规则数: {len(last_tx.imported_rule_ids)}")
+    if last_tx.affected_batches:
+        safe_print(f"  导入时波及批次: {len(last_tx.affected_batches)}")
+        for ab in last_tx.affected_batches:
+            safe_print(f"    * 批次 {ab['batch_id']}: 影响 {ab['affected_count']} 个问题")
+    safe_print()
+    safe_print("回滚将:")
+    safe_print(f"  - 移除本次导入的 {len(last_tx.imported_rule_ids)} 条规则")
+    safe_print(f"  - 保留手工规则")
+    safe_print(f"  - 标记事务状态为已回滚")
+    safe_print()
 
     if not getattr(args, "yes", False):
-        print("请使用 --yes 确认回滚操作。")
+        safe_print("请使用 --yes 确认回滚操作。")
         return 24
 
     try:
         result = store.rollback_last_import(args.actor)
     except WaiverTransactionError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        safe_print(f"错误: {e}", file=sys.stderr)
         return 25
 
-    print(f"回滚完成:")
-    print(f"  事务ID: {result['transaction_id']}")
-    print(f"  操作人: {args.actor}")
-    print(f"  移除导入规则数: {result['removed_count']}")
-    print(f"  保留手工规则数: {result['manual_rules_preserved']}")
+    safe_print(f"回滚完成:")
+    safe_print(f"  事务ID: {result['transaction_id']}")
+    safe_print(f"  操作人: {args.actor}")
+    safe_print(f"  移除导入规则数: {result['removed_count']}")
+    safe_print(f"  保留手工规则数: {result['manual_rules_preserved']}")
     if result["removed_ids"]:
-        print(f"  已移除规则:")
+        safe_print(f"  已移除规则:")
         for rid in result["removed_ids"]:
-            print(f"    - {rid}")
+            safe_print(f"    - {rid}")
+    if backup_dir and result["removed_ids"]:
+        try:
+            current_batches = analyze_affected_batches(backup_dir, store)
+            if current_batches:
+                safe_print(f"  回滚后仍受影响批次: {len(current_batches)}")
+                for ab in current_batches:
+                    safe_print(f"    * 批次 {ab['batch_id']}: {ab['affected_count']} 个问题")
+            else:
+                safe_print(f"  回滚后无批次受豁免规则影响")
+        except Exception:
+            pass
     return 0
 
 
@@ -883,21 +996,25 @@ def cmd_waiver_transactions(args: argparse.Namespace) -> int:
     transactions = store.list_transactions(limit=getattr(args, "limit", 10))
 
     if not transactions:
-        print("暂无导入事务记录。")
+        safe_print("暂无导入事务记录。")
         return 0
 
-    print(f"=== 导入事务历史 (最近 {len(transactions)} 条) ===")
+    safe_print(f"=== 导入事务历史 (最近 {len(transactions)} 条) ===")
     for tx in transactions:
-        status_icon = "✅" if tx.status.value == "committed" else "↩️" if tx.status.value == "rolled_back" else "⏳"
-        print(f"{status_icon} [{tx.timestamp}] {tx.id}")
-        print(f"    状态: {tx.status.value}")
-        print(f"    操作人: {tx.actor}")
-        print(f"    模式: {tx.mode}")
-        print(f"    源文件: {tx.source_file}")
-        print(f"    导入规则数: {len(tx.imported_rule_ids)}")
+        status_icon = "[COMMITTED]" if tx.status.value == "committed" else "[ROLLED_BACK]" if tx.status.value == "rolled_back" else "[PENDING]"
+        safe_print(f"{status_icon} [{tx.timestamp}] {tx.id}")
+        safe_print(f"    状态: {tx.status.value}")
+        safe_print(f"    操作人: {tx.actor}")
+        safe_print(f"    模式: {tx.mode}")
+        safe_print(f"    源文件: {tx.source_file}")
+        safe_print(f"    导入规则数: {len(tx.imported_rule_ids)}")
+        if tx.affected_batches:
+            safe_print(f"    波及批次: {len(tx.affected_batches)}")
+            for ab in tx.affected_batches:
+                safe_print(f"      * {ab['batch_id']}: {ab['affected_count']} 个问题")
         if tx.detail.get("removed_ids"):
-            print(f"    回滚移除: {len(tx.detail['removed_ids'])} 条")
-        print()
+            safe_print(f"    回滚移除: {len(tx.detail['removed_ids'])} 条")
+        safe_print()
     return 0
 
 
@@ -1066,12 +1183,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_waiver_import.add_argument(
         "--dry-run",
         action="store_true",
-        help="仅预演导入，不实际修改规则。显示新增、冲突、已存在、已过期数量。",
+        help="仅预演导入，不实际修改规则。显示新增、冲突、已存在、已过期数量；指定 --backup-dir 时还会分析受影响批次。",
     )
     p_waiver_import.add_argument(
         "--replace-confirm-manual-delete",
         action="store_true",
         help="replace 模式下确认删除所有手工规则（防止误删）",
+    )
+    p_waiver_import.add_argument(
+        "--backup-dir",
+        default=None,
+        help="备份包目录，用于分析下次 precheck/rescan 受影响的批次",
     )
     p_waiver_import.set_defaults(func=cmd_waiver_import)
 
@@ -1081,6 +1203,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_waiver_rollback.add_argument("--actor", required=True, help="操作人")
     p_waiver_rollback.add_argument("--yes", action="store_true", help="确认执行回滚")
+    p_waiver_rollback.add_argument(
+        "--backup-dir",
+        default=None,
+        help="备份包目录，用于分析回滚后受影响的批次",
+    )
     p_waiver_rollback.set_defaults(func=cmd_waiver_rollback)
 
     p_waiver_transactions = waiver_sub.add_parser(
@@ -1088,6 +1215,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="查看导入事务历史（可用于追溯和确认回滚）",
     )
     p_waiver_transactions.add_argument("--limit", type=int, default=10, help="显示最近 N 条记录")
+    p_waiver_transactions.add_argument(
+        "--backup-dir",
+        default=None,
+        help="备份包目录，用于分析事务回滚时波及的批次",
+    )
     p_waiver_transactions.set_defaults(func=cmd_waiver_transactions)
 
     p_waiver_rescan = waiver_sub.add_parser("rescan", help="用当前豁免规则重新扫描批次，更新豁免状态")

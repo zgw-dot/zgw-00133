@@ -236,6 +236,7 @@ class WaiverTransaction:
     rules_after: List[Dict[str, Any]] = field(default_factory=list)
     imported_rule_ids: List[str] = field(default_factory=list)
     precheck_result: Optional[Dict[str, Any]] = None
+    affected_batches: List[Dict[str, Any]] = field(default_factory=list)
     detail: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -250,6 +251,7 @@ class WaiverTransaction:
             "rules_after": self.rules_after,
             "imported_rule_ids": self.imported_rule_ids,
             "precheck_result": self.precheck_result,
+            "affected_batches": self.affected_batches,
             "detail": self.detail,
         }
 
@@ -266,6 +268,7 @@ class WaiverTransaction:
             rules_after=data.get("rules_after", []),
             imported_rule_ids=data.get("imported_rule_ids", []),
             precheck_result=data.get("precheck_result"),
+            affected_batches=data.get("affected_batches", []),
             detail=data.get("detail", {}),
         )
 
@@ -649,6 +652,7 @@ class WaiverStore:
         precheck_result: WaiverPrecheckResult,
         actor: str,
         mode: str = "merge",
+        affected_batches: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not precheck_result.can_commit:
             raise WaiverTransactionError(
@@ -688,6 +692,8 @@ class WaiverStore:
 
         rules_after = [r.to_dict() for r in self.rules]
 
+        final_affected = affected_batches or []
+
         transaction = WaiverTransaction(
             id=transaction_id,
             actor=actor,
@@ -699,6 +705,7 @@ class WaiverStore:
             rules_after=rules_after,
             imported_rule_ids=imported_rule_ids,
             precheck_result=precheck_result.to_dict(),
+            affected_batches=final_affected,
             detail={
                 "added": added,
                 "skipped": skipped,
@@ -717,6 +724,7 @@ class WaiverStore:
                 "added": added,
                 "skipped": skipped,
                 "conflicts": conflicts,
+                "affected_batch_count": len(final_affected),
             },
         )
 
@@ -787,6 +795,8 @@ class WaiverStore:
         actor: str,
         mode: str = "merge",
         replace_confirm_manual_delete: bool = False,
+        backup_dir: Optional[str] = None,
+        affected_batches: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         precheck_result = self.precheck_import(input_path, mode=mode)
         if not precheck_result.can_commit:
@@ -809,7 +819,15 @@ class WaiverStore:
                     "请使用 --replace-confirm-manual-delete 参数确认此操作。"
                 )
 
-        return self.commit_import(precheck_result, actor, mode=mode)
+        result = self.commit_import(
+            precheck_result,
+            actor,
+            mode=mode,
+            affected_batches=affected_batches,
+        )
+        if affected_batches:
+            result["affected_batches"] = affected_batches
+        return result
 
     def match_issue(
         self,

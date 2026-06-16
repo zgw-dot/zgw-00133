@@ -1768,5 +1768,358 @@ class TestWaiverFullWorkflow(WaiverTestBase):
         self.assertEqual(len(rules_final["rules"]), 3)
 
 
+class TestWaiverSafeEncodingOutput(WaiverTestBase):
+    def test_dry_run_output_has_no_emoji_and_uses_ascii_status(self):
+        export_path = os.path.join(self.tmp_dir, "enc_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "enc1",
+                    "path_prefix": "data/enc/",
+                    "reason": "encoding test",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            "--dry-run",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[OK]", r.stdout)
+        self.assertIn("预演通过", r.stdout)
+        for ch in ["✅", "❌", "↩️", "⏳", "🎉", "💡"]:
+            self.assertNotIn(ch, r.stdout, f"输出不应包含 emoji: {ch}")
+
+    def test_transactions_output_has_no_emoji(self):
+        export_path = os.path.join(self.tmp_dir, "tx_enc.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "tester",
+            "rules": [
+                {
+                    "id": "tx_enc_1",
+                    "path_prefix": "data/enc_tx/",
+                    "reason": "enc tx test",
+                    "actor": "tester",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "tester",
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[COMMITTED]", r.stdout)
+        for ch in ["✅", "❌", "↩️", "⏳"]:
+            self.assertNotIn(ch, r.stdout, f"事务输出不应包含 emoji: {ch}")
+
+    def test_gbk_friendly_output_does_not_crash(self):
+        export_path = os.path.join(self.tmp_dir, "gbk_test.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "测试者",
+            "rules": [
+                {
+                    "id": "gbk_1",
+                    "path_prefix": "data/中文路径/",
+                    "reason": "中文理由测试",
+                    "actor": "操作人",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        env = dict(self.extra_env)
+        env["PYTHONIOENCODING"] = "ascii"
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "测试人",
+            "--dry-run",
+            extra_env=env,
+        )
+        self.assertEqual(r.returncode, 0, f"ASCII 编码下不应崩溃: stderr={r.stderr}")
+
+
+class TestWaiverAffectedBatchAnalysis(WaiverTestBase):
+    def setUp(self):
+        super().setUp()
+        self._setup_batch()
+
+    def test_dry_run_with_backup_dir_shows_affected_batches(self):
+        export_path = os.path.join(self.tmp_dir, "affect.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "aff_hash",
+                    "issue_type": "bad_checksum",
+                    "reason": "ignore hash issue",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--dry-run",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("受影响批次", r.stdout)
+
+    def test_import_stores_affected_batches_in_transaction(self):
+        export_path = os.path.join(self.tmp_dir, "txaffect.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "tx_aff_1",
+                    "issue_type": "bad_checksum",
+                    "reason": "order rule",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("波及批次", r.stdout)
+
+        tx_path = os.path.join(self.config_dir, "waiver_transactions.json")
+        with open(tx_path, "r", encoding="utf-8") as f:
+            txs_raw = json.load(f)
+        txs = txs_raw.get("transactions", []) if isinstance(txs_raw, dict) else txs_raw
+        self.assertTrue(len(txs) >= 1)
+        last_tx = txs[-1]
+        self.assertIn("affected_batches", last_tx)
+        self.assertIsInstance(last_tx["affected_batches"], list)
+        self.assertTrue(len(last_tx["affected_batches"]) >= 1)
+
+    def test_transactions_shows_affected_batches(self):
+        export_path = os.path.join(self.tmp_dir, "txshow.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "showaff",
+                    "issue_type": "bad_checksum",
+                    "reason": "pay rule",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("波及批次", r.stdout)
+
+
+class TestWaiverHelpConsistency(WaiverTestBase):
+    def test_waiver_import_help_mentions_dry_run_and_backup_dir(self):
+        r = run_cli("waiver", "import", "--help", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--dry-run", r.stdout)
+        self.assertIn("--backup-dir", r.stdout)
+        self.assertIn("受影响批次", r.stdout)
+
+    def test_waiver_rollback_help_has_backup_dir(self):
+        r = run_cli("waiver", "rollback", "--help", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--backup-dir", r.stdout)
+        self.assertIn("--yes", r.stdout)
+
+    def test_waiver_transactions_help_has_backup_dir(self):
+        r = run_cli("waiver", "transactions", "--help", extra_env=self.extra_env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--backup-dir", r.stdout)
+
+    def test_import_rollback_output_mentions_yes_flag(self):
+        export_path = os.path.join(self.tmp_dir, "helpcheck.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "hchk1",
+                    "path_prefix": "data/hchk/",
+                    "reason": "help check",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--yes", r.stdout)
+
+
+class TestWaiverFullWorkflowWithBatches(WaiverTestBase):
+    def test_full_workflow_with_batch_impact_analysis(self):
+        self._setup_batch()
+
+        run_cli(
+            "waiver", "add",
+            "--actor", "manual_user",
+            "--reason", "batch workflow test manual",
+            "--path-prefix", "data/manual_batch/",
+            extra_env=self.extra_env,
+        )
+
+        export_path = os.path.join(self.tmp_dir, "batchwf.json")
+        test_rules = {
+            "exported_at": "2026-06-16T00:00:00",
+            "exported_by": "importer",
+            "rules": [
+                {
+                    "id": "wf_pay_new",
+                    "issue_type": "bad_checksum",
+                    "reason": "ignore bad checksum",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+                {
+                    "id": "wf_conflict",
+                    "path_prefix": "data/manual_batch/sub/",
+                    "reason": "conflict test",
+                    "actor": "importer",
+                    "created_at": "2026-06-16T00:00:00",
+                    "active": True,
+                },
+            ],
+        }
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(test_rules, f)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--dry-run",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("新增规则: 1", r.stdout)
+        self.assertIn("冲突/风险 (跳过): 1", r.stdout)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "importer",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("波及批次", r.stdout)
+
+        rules = self._read_waiver_rules()
+        self.assertEqual(len(rules["rules"]), 2)
+
+        r = run_cli(
+            "waiver", "rollback",
+            "--actor", "rollbacker",
+            "--yes",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("导入时波及批次", r.stdout)
+
+        r = run_cli(
+            "waiver", "transactions",
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("波及批次", r.stdout)
+        self.assertIn("[ROLLED_BACK]", r.stdout)
+
+        rules_rb = self._read_waiver_rules()
+        self.assertEqual(len(rules_rb["rules"]), 1)
+        self.assertEqual(rules_rb["rules"][0]["source"], "manual")
+
+        store2 = WaiverStore(
+            rules_path=os.path.join(self.config_dir, "waiver_rules.json"),
+            log_path=os.path.join(self.config_dir, "waiver_audit_log.json"),
+            transactions_path=os.path.join(self.config_dir, "waiver_transactions.json"),
+        )
+        txs_after = store2.list_transactions(limit=5)
+        self.assertEqual(txs_after[0].status.value, "rolled_back")
+        self.assertIsNotNone(txs_after[0].affected_batches)
+
+        r = run_cli(
+            "waiver", "import", export_path,
+            "--actor", "reimporter",
+            "--backup-dir", self.tmp_dir,
+            extra_env=self.extra_env,
+        )
+        self.assertEqual(r.returncode, 0)
+
+        rules_final = self._read_waiver_rules()
+        self.assertEqual(len(rules_final["rules"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
